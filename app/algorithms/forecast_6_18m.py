@@ -275,8 +275,9 @@ def forecast_6_18m(asin: str, today_override: date = None,
             if weekly_avg > 50 and growth_rate > 2.0:
                 # Low seasonality + high growth + volume = +3% boost
                 adjusted_cvr *= 1.03
-            elif weekly_avg <= 50:
-                # Low seasonality + no volume boost = +10.4% base boost
+            elif weekly_avg <= 50 and growth_rate >= 1.0:
+                # Low seasonality + no volume boost + stable/growing = +10.4% base boost
+                # Don't boost declining products (growth_rate < 1.0)
                 adjusted_cvr *= 1.104
     
     # Generate forecasts using week_of_year for seasonality lookup
