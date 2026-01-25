@@ -112,31 +112,37 @@ async def get_all_forecasts(
         # Force recalculation - this is slow but updates the cache
         return await _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min_units)
     
-    # Read from pre-calculated table (FAST!)
+    # Read from pre-calculated table with inventory details (FAST!)
     query = """
         SELECT 
-            asin, product_name, algorithm, age_months,
-            doi_total, doi_fba, units_to_make, peak,
-            total_inventory, fba_available, status,
-            calculated_at
-        FROM forecast_cache
+            fc.asin, fc.product_name, fc.algorithm, fc.age_months,
+            fc.doi_total, fc.doi_fba, fc.units_to_make, fc.peak,
+            fc.total_inventory, fc.fba_available, fc.status,
+            fc.calculated_at,
+            COALESCE(i.fba_reserved, 0) as fba_reserved,
+            COALESCE(i.fba_inbound, 0) as fba_inbound,
+            COALESCE(i.awd_available, 0) as awd_available,
+            COALESCE(i.awd_reserved, 0) as awd_reserved,
+            COALESCE(i.awd_inbound, 0) as awd_inbound
+        FROM forecast_cache fc
+        LEFT JOIN inventory i ON fc.asin = i.asin
         WHERE 1=1
     """
     params = []
     
     if status_filter:
-        query += " AND status = %s"
+        query += " AND fc.status = %s"
         params.append(status_filter)
     
     if algorithm_filter:
-        query += " AND algorithm = %s"
+        query += " AND fc.algorithm = %s"
         params.append(algorithm_filter)
     
     if min_units > 0:
-        query += " AND units_to_make >= %s"
+        query += " AND fc.units_to_make >= %s"
         params.append(min_units)
     
-    query += " ORDER BY units_to_make DESC LIMIT %s"
+    query += " ORDER BY fc.units_to_make DESC LIMIT %s"
     params.append(limit)
     
     results = execute_query(query, tuple(params) if params else None)
@@ -178,6 +184,11 @@ async def get_all_forecasts(
             peak=r.get('peak'),
             total_inventory=r.get('total_inventory'),
             fba_available=r.get('fba_available'),
+            fba_reserved=r.get('fba_reserved'),
+            fba_inbound=r.get('fba_inbound'),
+            awd_available=r.get('awd_available'),
+            awd_reserved=r.get('awd_reserved'),
+            awd_inbound=r.get('awd_inbound'),
             status=r['status']
         ))
     

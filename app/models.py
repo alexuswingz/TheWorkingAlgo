@@ -16,6 +16,11 @@ class ForecastResult(BaseModel):
     # Inventory metrics
     total_inventory: Optional[int] = Field(None, description="Total inventory across all locations")
     fba_available: Optional[int] = Field(None, description="FBA available inventory")
+    fba_reserved: Optional[int] = Field(None, description="FBA reserved inventory")
+    fba_inbound: Optional[int] = Field(None, description="FBA inbound inventory")
+    awd_available: Optional[int] = Field(None, description="AWD available inventory")
+    awd_reserved: Optional[int] = Field(None, description="AWD reserved inventory")
+    awd_inbound: Optional[int] = Field(None, description="AWD inbound inventory")
     
     # Forecast metrics
     units_to_make: Optional[int] = Field(None, description="Units needed to manufacture")
