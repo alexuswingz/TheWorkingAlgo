@@ -332,8 +332,14 @@ def _save_forecasts_to_db(results: list):
 async def get_sales_data(asin: str):
     """
     Get weekly sales data for a specific ASIN for charting.
-    Returns historical sales and forecast data.
+    Returns historical sales, smoothed data, and forecast matching Excel chart structure.
+    Uses the appropriate algorithm based on product age.
     """
+    from datetime import date, timedelta
+    
+    # Determine which algorithm to use
+    algorithm = get_appropriate_algorithm(asin)
+    
     # Get weekly sales data
     sales = execute_query(
         "SELECT week_end, units_sold FROM weekly_sales WHERE asin = %s ORDER BY week_end",
@@ -343,40 +349,78 @@ async def get_sales_data(asin: str):
     if not sales:
         return {
             "asin": asin,
-            "historical": [],
-            "forecast": []
+            "data": []
         }
     
-    # Get forecast data to calculate future projections
-    forecast_result = run_forecast(asin)
+    today = date.today()
     
-    # Format historical sales
-    historical = [
-        {
-            "date": str(sale['week_end']),
-            "units": sale['units_sold'] or 0
-        }
-        for sale in sales
-    ]
+    # Build weekly data arrays
+    week_dates = [s['week_end'] for s in sales]
+    units = [s['units_sold'] or 0 for s in sales]
     
-    # Calculate smoothed values (simple moving average)
-    smoothed = []
-    for i, sale in enumerate(sales):
-        window = sales[max(0, i-2):min(len(sales), i+3)]
-        avg = sum(s['units_sold'] or 0 for s in window) / len(window)
-        smoothed.append({
-            "date": str(sale['week_end']),
-            "units": round(avg)
+    # Extend to future weeks
+    last = max(week_dates)
+    current = last + timedelta(days=7)
+    while current <= today + timedelta(days=365):
+        week_dates.append(current)
+        units.append(0)
+        current += timedelta(days=7)
+    
+    # Use 18m+ algorithm columns for all (they work for smoothing any historical data)
+    from ..algorithms.forecast_18m_plus import (
+        col_D_units_peak_env, col_E_units_peak_env_offset, col_F_units_smooth_env,
+        col_G_units_final_curve, col_H_units_final_smooth, col_I, col_J, col_K, col_L,
+        L_CORRECTION, VELOCITY_WEIGHT, MARKET_ADJUSTMENT, calc_velocity
+    )
+    
+    # Calculate algorithm columns (matching Excel)
+    D = col_D_units_peak_env(units)
+    E = col_E_units_peak_env_offset(D)
+    F = col_F_units_smooth_env(E)
+    G = col_G_units_final_curve(units, E, F)
+    H = col_H_units_final_smooth(G, week_dates, today)  # Historical smoothed
+    I = col_I(H)  # Adjusted (H * 0.85)
+    J = col_J(I)  # Prior year shifted
+    K = col_K(J)
+    L = col_L(K)  # Prior year smoothed
+    
+    # Calculate forecast (columns O and P) - use 18m+ calculation for all
+    velocity = calc_velocity(I, L, week_dates, today)
+    multiplier = 1 + (velocity * VELOCITY_WEIGHT) + MARKET_ADJUSTMENT
+    
+    if velocity > 2.0:
+        high_velocity_boost = min(0.06, (velocity - 2.0) * 0.01)
+        multiplier *= (1 + high_velocity_boost)
+    
+    # Build chart data
+    chart_data = []
+    for i, wd in enumerate(week_dates):
+        units_sold = units[i] if i < len(units) else 0
+        h_val = H[i] if i < len(H) and H[i] is not None else None
+        l_val = L[i] if i < len(L) and L[i] is not None else None
+        
+        # Calculate forecast (P column) - use 18m+ formula
+        forecast_val = None
+        if wd >= today and wd <= today + timedelta(days=365) and l_val is not None:
+            O = l_val * L_CORRECTION * multiplier
+            next_L = L[i+1] if i+1 < len(L) and L[i+1] is not None else l_val
+            O_next = next_L * L_CORRECTION * multiplier
+            forecast_val = (O + O_next) / 2
+        
+        chart_data.append({
+            "date": str(wd),
+            "units_sold": units_sold,
+            "smoothed": round(h_val) if h_val is not None else None,
+            "prior_year": round(l_val) if l_val is not None else None,
+            "forecast": round(forecast_val) if forecast_val is not None else None,
+            "is_past": wd <= today,
+            "is_future": wd > today
         })
     
-    # For forecast, we'd need to calculate from the forecast algorithm
-    # For now, return empty and let frontend calculate from peak/velocity
     return {
         "asin": asin,
-        "historical": historical,
-        "smoothed": smoothed,
-        "peak": forecast_result.get('peak'),
-        "weekly_velocity": forecast_result.get('peak') or 0
+        "algorithm": algorithm,
+        "data": chart_data
     }
 
 
