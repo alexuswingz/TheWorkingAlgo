@@ -328,6 +328,58 @@ def _save_forecasts_to_db(results: list):
         conn.close()
 
 
+@router.get("/{asin}/sales")
+async def get_sales_data(asin: str):
+    """
+    Get weekly sales data for a specific ASIN for charting.
+    Returns historical sales and forecast data.
+    """
+    # Get weekly sales data
+    sales = execute_query(
+        "SELECT week_end, units_sold FROM weekly_sales WHERE asin = %s ORDER BY week_end",
+        (asin,)
+    )
+    
+    if not sales:
+        return {
+            "asin": asin,
+            "historical": [],
+            "forecast": []
+        }
+    
+    # Get forecast data to calculate future projections
+    forecast_result = run_forecast(asin)
+    
+    # Format historical sales
+    historical = [
+        {
+            "date": str(sale['week_end']),
+            "units": sale['units_sold'] or 0
+        }
+        for sale in sales
+    ]
+    
+    # Calculate smoothed values (simple moving average)
+    smoothed = []
+    for i, sale in enumerate(sales):
+        window = sales[max(0, i-2):min(len(sales), i+3)]
+        avg = sum(s['units_sold'] or 0 for s in window) / len(window)
+        smoothed.append({
+            "date": str(sale['week_end']),
+            "units": round(avg)
+        })
+    
+    # For forecast, we'd need to calculate from the forecast algorithm
+    # For now, return empty and let frontend calculate from peak/velocity
+    return {
+        "asin": asin,
+        "historical": historical,
+        "smoothed": smoothed,
+        "peak": forecast_result.get('peak'),
+        "weekly_velocity": forecast_result.get('peak') or 0
+    }
+
+
 @router.post("/refresh-cache")
 async def refresh_forecast_cache():
     """
