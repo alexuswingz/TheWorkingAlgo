@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from .config import get_settings
-from .routers import forecast, health
+from .routers import forecast, health, settings
 
 
 @asynccontextmanager
@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(health.router)
     app.include_router(forecast.router)
+    app.include_router(settings.router)
     
     return app
 
