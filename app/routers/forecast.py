@@ -206,14 +206,44 @@ async def get_all_forecasts(
 async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min_units):
     """Recalculate all forecasts and update the cache table"""
     
-    # Get products with seasonality data AND inventory
+    # Get products based on algorithm requirements:
+    # - 18m+ products: only need sales data (no seasonality required)
+    # - 0-6m and 6-18m: need seasonality data AND inventory
+    today = date.today()
     products = execute_query("""
-        SELECT DISTINCT p.asin 
+        SELECT DISTINCT p.asin,
+            CASE 
+                WHEN p.release_date IS NULL THEN '18m+'
+                WHEN (CURRENT_DATE - p.release_date) / 30.44 < 6 THEN '0-6m'
+                WHEN (CURRENT_DATE - p.release_date) / 30.44 < 18 THEN '6-18m'
+                ELSE '18m+'
+            END as algorithm
         FROM products p
-        JOIN asin_search_volume sv ON (p.parent_asin = sv.asin OR p.asin = sv.asin)
-        JOIN inventory i ON p.asin = i.asin
-        WHERE sv.search_volume > 0
-        AND (i.fba_available > 0 OR i.awd_available > 0 OR i.fba_inbound > 0 OR i.awd_inbound > 0)
+        WHERE (
+            -- 18m+ products: only need sales data
+            (
+                (p.release_date IS NULL OR (CURRENT_DATE - p.release_date) / 30.44 >= 18)
+                AND EXISTS (
+                    SELECT 1 FROM weekly_sales ws 
+                    WHERE ws.asin = p.asin AND ws.units_sold > 0
+                )
+            )
+            OR
+            -- 0-6m and 6-18m: need seasonality AND inventory
+            (
+                (CURRENT_DATE - p.release_date) / 30.44 < 18
+                AND EXISTS (
+                    SELECT 1 FROM asin_search_volume sv 
+                    WHERE (p.parent_asin = sv.asin OR p.asin = sv.asin) 
+                    AND sv.search_volume > 0
+                )
+                AND EXISTS (
+                    SELECT 1 FROM inventory i 
+                    WHERE i.asin = p.asin 
+                    AND (i.fba_available > 0 OR i.awd_available > 0 OR i.fba_inbound > 0 OR i.awd_inbound > 0)
+                )
+            )
+        )
         ORDER BY p.asin
     """)
     
