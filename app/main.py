@@ -14,8 +14,9 @@ Algorithms (LOCKED - DO NOT MODIFY):
 - 18m+: Weighted smoothing with prior year data
 ================================================================================
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from .config import get_settings
@@ -46,14 +47,28 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
     
-    # CORS middleware
+    # CORS middleware - allow all origins explicitly
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
+        allow_origins=["*"],
+        allow_credentials=False,  # Must be False when allow_origins=["*"]
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
+        expose_headers=["*"],
     )
+    
+    # Global exception handler with CORS headers
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(exc)},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            }
+        )
     
     # Include routers
     app.include_router(health.router)
