@@ -233,12 +233,41 @@ def forecast_6_18m(asin: str, today_override: date = None,
     
     # CVR adjustment: boost for high-volume products
     adjusted_cvr = avg_peak_cvr
+    recent_12wk_sales = 0
+    weekly_avg = 0
     if len(sales) >= 12:
         recent_12wk_sales = sum(s['units_sold'] or 0 for s in sales[-12:])
         weekly_avg = recent_12wk_sales / 12
         if weekly_avg > 50:
             volume_boost = min(0.10, (weekly_avg - 50) / 500)
             adjusted_cvr = avg_peak_cvr * (1 + volume_boost)
+    
+    # Seasonality + Growth adjustment for highly seasonal products
+    # Products with high seasonality may have inflated CVR from off-peak measurements
+    if seasonality_idx:
+        min_idx = min(seasonality_idx.values())
+        max_idx = max(seasonality_idx.values())
+        amplitude = max_idx / min_idx if min_idx > 0 else 1
+        
+        # Calculate growth rate (recent 12wk vs yearly avg)
+        yearly_sales = sum(s['units_sold'] or 0 for s in sales)
+        yearly_avg = yearly_sales / len(sales) if sales else 0
+        growth_rate = weekly_avg / yearly_avg if yearly_avg > 0 else 1.0
+        
+        if amplitude > 20:  # Very high seasonality (25x+)
+            if growth_rate > 2.5:  # Strong growth
+                adjusted_cvr *= 1.05
+            elif growth_rate < 1.3:  # Flat/declining
+                adjusted_cvr *= 0.70
+            else:  # Moderate growth (1.3-2.5x)
+                adjusted_cvr *= 0.77
+        elif amplitude > 10:  # High seasonality (10-20x)
+            if growth_rate > 2.5:  # Strong growth
+                adjusted_cvr *= 1.05
+            elif growth_rate < 1.5:  # Flat/slow growth
+                adjusted_cvr *= 0.85
+            else:  # Moderate growth
+                adjusted_cvr *= 0.95
     
     # Generate forecasts using week_of_year for seasonality lookup
     # (sv_weekly contains historical dates, we need to map future dates by week number)
