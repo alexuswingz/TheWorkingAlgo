@@ -243,8 +243,9 @@ def forecast_6_18m(asin: str, today_override: date = None,
             adjusted_cvr = avg_peak_cvr * (1 + volume_boost)
     
     # Seasonality + Growth adjustment for highly seasonal products
+    # Only apply when product ALSO has volume boost (weekly_avg > 50)
     # Products with high seasonality may have inflated CVR from off-peak measurements
-    if seasonality_idx:
+    if seasonality_idx and weekly_avg > 50:  # Only apply with volume boost
         min_idx = min(seasonality_idx.values())
         max_idx = max(seasonality_idx.values())
         amplitude = max_idx / min_idx if min_idx > 0 else 1
