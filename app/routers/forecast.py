@@ -103,11 +103,16 @@ async def get_all_forecasts(
     """
     Get pre-aggregated forecasts for all products.
     
-    Returns forecasts for all products with summary statistics.
+    Returns forecasts for all products WITH SEASONALITY DATA.
     Results are sorted by units_to_make (descending).
     """
-    # Get all products
-    products = execute_query("SELECT asin FROM products ORDER BY asin")
+    # Get only products that have seasonality data (via parent or child ASIN)
+    products = execute_query("""
+        SELECT DISTINCT p.asin 
+        FROM products p
+        JOIN asin_search_volume sv ON (p.parent_asin = sv.asin OR p.asin = sv.asin)
+        ORDER BY p.asin
+    """)
     
     if not products:
         return AllForecastsResponse(
@@ -131,6 +136,10 @@ async def get_all_forecasts(
             try:
                 result = future.result()
                 
+                # Skip results with errors (no seasonality data, etc.)
+                if result.get('error'):
+                    continue
+                
                 # Normalize response keys
                 if 'doi_total_days' in result:
                     result['doi_total'] = result.pop('doi_total_days')
@@ -139,13 +148,8 @@ async def get_all_forecasts(
                 
                 results.append(result)
             except Exception as e:
-                asin = future_to_asin[future]
-                results.append({
-                    'asin': asin,
-                    'algorithm': 'unknown',
-                    'error': str(e),
-                    'status': 'good'
-                })
+                # Skip failed forecasts
+                continue
     
     # Apply filters
     filtered_results = results
@@ -165,22 +169,21 @@ async def get_all_forecasts(
     # Apply limit
     filtered_results = filtered_results[:limit]
     
-    # Calculate summary statistics
+    # Calculate summary statistics (only from valid results)
     critical_count = sum(1 for r in results if r.get('status') == 'critical')
     low_count = sum(1 for r in results if r.get('status') == 'low')
     good_count = sum(1 for r in results if r.get('status') == 'good')
-    error_count = sum(1 for r in results if r.get('error'))
-    total_units = sum(r.get('units_to_make') or 0 for r in results if not r.get('error'))
+    total_units = sum(r.get('units_to_make') or 0 for r in results)
     
     # Convert to ForecastResult objects
     forecast_objects = [ForecastResult(**r) for r in filtered_results]
     
     return AllForecastsResponse(
-        total_products=len(products),
+        total_products=len(results),  # Only count products with valid forecasts
         forecasts=forecast_objects,
         critical_count=critical_count,
         low_count=low_count,
         good_count=good_count,
-        error_count=error_count,
+        error_count=0,  # No errors in response anymore
         total_units_to_make=total_units
     )
