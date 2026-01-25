@@ -240,18 +240,16 @@ def forecast_6_18m(asin: str, today_override: date = None,
             volume_boost = min(0.10, (weekly_avg - 50) / 500)
             adjusted_cvr = avg_peak_cvr * (1 + volume_boost)
     
-    # Generate forecasts
+    # Generate forecasts using week_of_year for seasonality lookup
+    # (sv_weekly contains historical dates, we need to map future dates by week number)
     days_until_sat = (5 - today.weekday()) % 7 or 7
     current = today + timedelta(days=days_until_sat)
     forecasts = []
     while current <= today + timedelta(days=365):
         week_num = current.isocalendar()[1]
-        sv_val = sv_scaled_by_date.get(current) if sv_scaled_by_date else None
-        idx = seasonality_by_date.get(current) if seasonality_by_date else None
-        if sv_val is None:
-            sv_val = sv_scaled.get(week_num, 1000)
-        if idx is None:
-            idx = seasonality_idx.get(week_num, 1.0)
+        # Use week_of_year for lookup since sv_weekly has historical dates only
+        sv_val = sv_scaled.get(week_num, 1000)
+        idx = seasonality_idx.get(week_num, 1.0)
         weighted_cvr = adjusted_cvr * (1 + CVR_SEASONALITY_WEIGHT * (idx - 1))
         forecasts.append((current, max(0, sv_val * weighted_cvr)))
         current += timedelta(days=7)
