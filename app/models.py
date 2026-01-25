@@ -9,6 +9,7 @@ from datetime import date
 class ForecastResult(BaseModel):
     """Individual ASIN forecast result"""
     asin: str = Field(..., description="Product ASIN")
+    product_name: Optional[str] = Field(None, description="Product name/title")
     algorithm: str = Field(..., description="Algorithm used (0-6m, 6-18m, 18m+)")
     age_months: Optional[float] = Field(None, description="Product age in months")
     

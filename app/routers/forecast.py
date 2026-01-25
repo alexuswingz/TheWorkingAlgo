@@ -98,13 +98,32 @@ async def get_forecast(
     return ForecastResult(**result)
 
 
+def _get_product_names() -> dict:
+    """Fetch all product names as a lookup dict"""
+    products = execute_query("""
+        SELECT asin, product_name FROM products WHERE product_name IS NOT NULL
+    """)
+    return {p['asin']: p['product_name'] for p in products} if products else {}
+
+
+def _has_valid_seasonality(asin: str) -> bool:
+    """Check if ASIN has actual seasonality data with search volume"""
+    result = execute_query("""
+        SELECT COUNT(*) as cnt FROM asin_search_volume sv
+        JOIN products p ON (p.parent_asin = sv.asin OR p.asin = sv.asin)
+        WHERE p.asin = %s AND sv.search_volume > 0
+    """, (asin,), fetch_one=True)
+    return result and result.get('cnt', 0) > 0
+
+
 def _compute_all_forecasts() -> dict:
     """Compute all forecasts and return cached data structure"""
-    # Get only products that have seasonality data
+    # Get only products that have seasonality data with actual search volume
     products = execute_query("""
         SELECT DISTINCT p.asin 
         FROM products p
         JOIN asin_search_volume sv ON (p.parent_asin = sv.asin OR p.asin = sv.asin)
+        WHERE sv.search_volume > 0
         ORDER BY p.asin
     """)
     
@@ -119,18 +138,29 @@ def _compute_all_forecasts() -> dict:
     
     asins = [p['asin'] for p in products]
     
+    # Get product names lookup
+    product_names = _get_product_names()
+    
     # Run forecasts in parallel with more workers for speed
     results = []
     with ThreadPoolExecutor(max_workers=20) as executor:
         future_to_asin = {executor.submit(run_forecast, asin): asin for asin in asins}
         
         for future in as_completed(future_to_asin):
+            asin = future_to_asin[future]
             try:
                 result = future.result()
                 
                 # Skip results with errors
                 if result.get('error'):
                     continue
+                
+                # Skip results without valid forecast data (no units_to_make calculated)
+                if result.get('units_to_make') is None:
+                    continue
+                
+                # Add product name
+                result['product_name'] = product_names.get(asin, None)
                 
                 # Normalize response keys
                 if 'doi_total_days' in result:
