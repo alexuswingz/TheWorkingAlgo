@@ -195,12 +195,14 @@ async def get_all_forecasts(
 async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min_units):
     """Recalculate all forecasts and update the cache table"""
     
-    # Get products with seasonality data
+    # Get products with seasonality data AND inventory
     products = execute_query("""
         SELECT DISTINCT p.asin 
         FROM products p
         JOIN asin_search_volume sv ON (p.parent_asin = sv.asin OR p.asin = sv.asin)
+        JOIN inventory i ON p.asin = i.asin
         WHERE sv.search_volume > 0
+        AND (i.fba_available > 0 OR i.awd_available > 0 OR i.fba_inbound > 0 OR i.awd_inbound > 0)
         ORDER BY p.asin
     """)
     
