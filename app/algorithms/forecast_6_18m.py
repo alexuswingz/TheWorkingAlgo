@@ -242,10 +242,9 @@ def forecast_6_18m(asin: str, today_override: date = None,
             volume_boost = min(0.10, (weekly_avg - 50) / 500)
             adjusted_cvr = avg_peak_cvr * (1 + volume_boost)
     
-    # Seasonality + Growth adjustment for highly seasonal products
-    # Only apply when product ALSO has volume boost (weekly_avg > 50)
-    # Products with high seasonality may have inflated CVR from off-peak measurements
-    if seasonality_idx and weekly_avg > 50:  # Only apply with volume boost
+    # Seasonality + Growth adjustment
+    # Calculate amplitude and growth rate for all products
+    if seasonality_idx:
         min_idx = min(seasonality_idx.values())
         max_idx = max(seasonality_idx.values())
         amplitude = max_idx / min_idx if min_idx > 0 else 1
@@ -255,20 +254,30 @@ def forecast_6_18m(asin: str, today_override: date = None,
         yearly_avg = yearly_sales / len(sales) if sales else 0
         growth_rate = weekly_avg / yearly_avg if yearly_avg > 0 else 1.0
         
-        if amplitude > 20:  # Very high seasonality (25x+)
-            if growth_rate > 2.5:  # Strong growth
+        # HIGH SEASONALITY adjustments (only with volume boost)
+        if weekly_avg > 50 and amplitude > 20:  # Very high seasonality (25x+)
+            if growth_rate > 2.5:
                 adjusted_cvr *= 1.05
-            elif growth_rate < 1.3:  # Flat/declining
+            elif growth_rate < 1.3:
                 adjusted_cvr *= 0.70
-            else:  # Moderate growth (1.3-2.5x)
+            else:
                 adjusted_cvr *= 0.77
-        elif amplitude > 10:  # High seasonality (10-20x)
-            if growth_rate > 2.5:  # Strong growth
+        elif weekly_avg > 50 and amplitude > 10:  # High seasonality (10-20x)
+            if growth_rate > 2.5:
                 adjusted_cvr *= 1.05
-            elif growth_rate < 1.5:  # Flat/slow growth
+            elif growth_rate < 1.5:
                 adjusted_cvr *= 0.85
-            else:  # Moderate growth
+            else:
                 adjusted_cvr *= 0.95
+        
+        # LOW SEASONALITY adjustments (amplitude <= 10)
+        elif amplitude <= 10:
+            if weekly_avg > 50 and growth_rate > 2.0:
+                # Low seasonality + high growth + volume = +3% boost
+                adjusted_cvr *= 1.03
+            elif weekly_avg <= 50:
+                # Low seasonality + no volume boost = +10.4% base boost
+                adjusted_cvr *= 1.104
     
     # Generate forecasts using week_of_year for seasonality lookup
     # (sv_weekly contains historical dates, we need to map future dates by week number)
