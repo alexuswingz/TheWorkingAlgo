@@ -1,12 +1,10 @@
 """
-Forecast API endpoints with caching for fast response times
+Forecast API endpoints with database-backed pre-calculated data for instant response
 """
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
-import time
 
 from ..models import ForecastResult, AllForecastsResponse
 from ..database import execute_query
@@ -16,15 +14,6 @@ router = APIRouter(prefix="/forecast", tags=["Forecast"])
 
 # Constants for age classification
 DAYS_PER_MONTH = 30.44
-
-# ============== CACHE CONFIGURATION ==============
-CACHE_TTL_SECONDS = 300  # Cache valid for 5 minutes
-_forecast_cache = {
-    "data": None,
-    "last_updated": None,
-    "is_loading": False
-}
-_cache_lock = threading.Lock()
 
 
 def get_appropriate_algorithm(asin: str, today: date = None) -> str:
@@ -98,139 +87,6 @@ async def get_forecast(
     return ForecastResult(**result)
 
 
-def _get_product_names() -> dict:
-    """Fetch all product names as a lookup dict"""
-    products = execute_query("""
-        SELECT asin, product_name FROM products WHERE product_name IS NOT NULL
-    """)
-    return {p['asin']: p['product_name'] for p in products} if products else {}
-
-
-def _has_valid_seasonality(asin: str) -> bool:
-    """Check if ASIN has actual seasonality data with search volume"""
-    result = execute_query("""
-        SELECT COUNT(*) as cnt FROM asin_search_volume sv
-        JOIN products p ON (p.parent_asin = sv.asin OR p.asin = sv.asin)
-        WHERE p.asin = %s AND sv.search_volume > 0
-    """, (asin,), fetch_one=True)
-    return result and result.get('cnt', 0) > 0
-
-
-def _compute_all_forecasts() -> dict:
-    """Compute all forecasts and return cached data structure"""
-    # Get only products that have seasonality data with actual search volume
-    products = execute_query("""
-        SELECT DISTINCT p.asin 
-        FROM products p
-        JOIN asin_search_volume sv ON (p.parent_asin = sv.asin OR p.asin = sv.asin)
-        WHERE sv.search_volume > 0
-        ORDER BY p.asin
-    """)
-    
-    if not products:
-        return {
-            "results": [],
-            "critical_count": 0,
-            "low_count": 0,
-            "good_count": 0,
-            "total_units": 0
-        }
-    
-    asins = [p['asin'] for p in products]
-    
-    # Get product names lookup
-    product_names = _get_product_names()
-    
-    # Run forecasts in parallel with more workers for speed
-    results = []
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_asin = {executor.submit(run_forecast, asin): asin for asin in asins}
-        
-        for future in as_completed(future_to_asin):
-            asin = future_to_asin[future]
-            try:
-                result = future.result()
-                
-                # Skip results with errors
-                if result.get('error'):
-                    continue
-                
-                # Skip results without valid forecast data (no units_to_make calculated)
-                if result.get('units_to_make') is None:
-                    continue
-                
-                # Add product name
-                result['product_name'] = product_names.get(asin, None)
-                
-                # Normalize response keys
-                if 'doi_total_days' in result:
-                    result['doi_total'] = result.pop('doi_total_days')
-                if 'doi_fba_days' in result:
-                    result['doi_fba'] = result.pop('doi_fba_days')
-                
-                results.append(result)
-            except Exception:
-                continue
-    
-    # Pre-calculate statistics
-    critical_count = sum(1 for r in results if r.get('status') == 'critical')
-    low_count = sum(1 for r in results if r.get('status') == 'low')
-    good_count = sum(1 for r in results if r.get('status') == 'good')
-    total_units = sum(r.get('units_to_make') or 0 for r in results)
-    
-    # Sort by units_to_make descending
-    results.sort(key=lambda x: x.get('units_to_make') or 0, reverse=True)
-    
-    return {
-        "results": results,
-        "critical_count": critical_count,
-        "low_count": low_count,
-        "good_count": good_count,
-        "total_units": total_units
-    }
-
-
-def _get_cached_forecasts(force_refresh: bool = False) -> dict:
-    """Get forecasts from cache or compute if needed"""
-    global _forecast_cache
-    
-    now = datetime.now()
-    
-    with _cache_lock:
-        # Check if cache is valid
-        cache_valid = (
-            _forecast_cache["data"] is not None and
-            _forecast_cache["last_updated"] is not None and
-            (now - _forecast_cache["last_updated"]).total_seconds() < CACHE_TTL_SECONDS and
-            not force_refresh
-        )
-        
-        if cache_valid:
-            return _forecast_cache["data"]
-        
-        # Mark as loading to prevent concurrent computations
-        if _forecast_cache["is_loading"] and _forecast_cache["data"] is not None:
-            # Return stale data while refreshing
-            return _forecast_cache["data"]
-        
-        _forecast_cache["is_loading"] = True
-    
-    try:
-        # Compute new data
-        data = _compute_all_forecasts()
-        
-        with _cache_lock:
-            _forecast_cache["data"] = data
-            _forecast_cache["last_updated"] = now
-            _forecast_cache["is_loading"] = False
-        
-        return data
-    except Exception as e:
-        with _cache_lock:
-            _forecast_cache["is_loading"] = False
-        raise e
-
-
 @router.get("/", response_model=AllForecastsResponse)
 async def get_all_forecasts(
     status_filter: Optional[str] = Query(
@@ -243,44 +99,272 @@ async def get_all_forecasts(
     ),
     limit: int = Query(1000, ge=1, le=10000, description="Maximum number of results"),
     min_units: int = Query(0, ge=0, description="Minimum units to make"),
-    refresh: bool = Query(False, description="Force cache refresh")
+    refresh: bool = Query(False, description="Force recalculation (slow)")
 ):
     """
-    Get pre-aggregated forecasts for all products (CACHED for fast response).
+    Get pre-calculated forecasts for all products (INSTANT from database).
     
-    Returns forecasts for all products WITH SEASONALITY DATA.
-    Cache refreshes every 5 minutes automatically.
-    Use ?refresh=true to force immediate refresh.
+    Returns forecasts from the pre-calculated `forecast_cache` table.
+    Use ?refresh=true to force recalculation (takes ~2-3 minutes).
     """
-    # Get from cache (fast!)
-    cached = _get_cached_forecasts(force_refresh=refresh)
     
-    results = cached["results"]
+    if refresh:
+        # Force recalculation - this is slow but updates the cache
+        return await _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min_units)
     
-    # Apply filters to cached data
-    filtered_results = results
+    # Read from pre-calculated table (FAST!)
+    query = """
+        SELECT 
+            asin, product_name, algorithm, age_months,
+            doi_total, doi_fba, units_to_make, peak,
+            total_inventory, fba_available, status,
+            calculated_at
+        FROM forecast_cache
+        WHERE 1=1
+    """
+    params = []
     
     if status_filter:
-        filtered_results = [r for r in filtered_results if r.get('status') == status_filter]
+        query += " AND status = %s"
+        params.append(status_filter)
     
     if algorithm_filter:
-        filtered_results = [r for r in filtered_results if r.get('algorithm') == algorithm_filter]
+        query += " AND algorithm = %s"
+        params.append(algorithm_filter)
     
     if min_units > 0:
-        filtered_results = [r for r in filtered_results if (r.get('units_to_make') or 0) >= min_units]
+        query += " AND units_to_make >= %s"
+        params.append(min_units)
     
-    # Apply limit
-    filtered_results = filtered_results[:limit]
+    query += " ORDER BY units_to_make DESC LIMIT %s"
+    params.append(limit)
+    
+    results = execute_query(query, tuple(params) if params else None)
+    
+    if not results:
+        # Table empty or doesn't exist - return empty response
+        return AllForecastsResponse(
+            total_products=0,
+            forecasts=[],
+            critical_count=0,
+            low_count=0,
+            good_count=0,
+            error_count=0,
+            total_units_to_make=0
+        )
+    
+    # Get totals from database
+    totals = execute_query("""
+        SELECT 
+            COUNT(*) as total,
+            SUM(CASE WHEN status = 'critical' THEN 1 ELSE 0 END) as critical_count,
+            SUM(CASE WHEN status = 'low' THEN 1 ELSE 0 END) as low_count,
+            SUM(CASE WHEN status = 'good' THEN 1 ELSE 0 END) as good_count,
+            SUM(units_to_make) as total_units
+        FROM forecast_cache
+    """, fetch_one=True)
     
     # Convert to ForecastResult objects
-    forecast_objects = [ForecastResult(**r) for r in filtered_results]
+    forecast_objects = []
+    for r in results:
+        forecast_objects.append(ForecastResult(
+            asin=r['asin'],
+            product_name=r.get('product_name'),
+            algorithm=r['algorithm'],
+            age_months=float(r['age_months']) if r.get('age_months') else None,
+            doi_total=r['doi_total'],
+            doi_fba=r['doi_fba'],
+            units_to_make=r['units_to_make'],
+            peak=r.get('peak'),
+            total_inventory=r.get('total_inventory'),
+            fba_available=r.get('fba_available'),
+            status=r['status']
+        ))
+    
+    return AllForecastsResponse(
+        total_products=totals['total'] if totals else 0,
+        forecasts=forecast_objects,
+        critical_count=totals['critical_count'] if totals else 0,
+        low_count=totals['low_count'] if totals else 0,
+        good_count=totals['good_count'] if totals else 0,
+        error_count=0,
+        total_units_to_make=int(totals['total_units'] or 0) if totals else 0
+    )
+
+
+async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min_units):
+    """Recalculate all forecasts and update the cache table"""
+    
+    # Get products with seasonality data
+    products = execute_query("""
+        SELECT DISTINCT p.asin 
+        FROM products p
+        JOIN asin_search_volume sv ON (p.parent_asin = sv.asin OR p.asin = sv.asin)
+        WHERE sv.search_volume > 0
+        ORDER BY p.asin
+    """)
+    
+    if not products:
+        return AllForecastsResponse(
+            total_products=0, forecasts=[], critical_count=0,
+            low_count=0, good_count=0, error_count=0, total_units_to_make=0
+        )
+    
+    asins = [p['asin'] for p in products]
+    
+    # Get product names
+    product_names_result = execute_query("""
+        SELECT asin, product_name FROM products WHERE product_name IS NOT NULL
+    """)
+    product_names = {p['asin']: p['product_name'] for p in product_names_result} if product_names_result else {}
+    
+    # Calculate forecasts in parallel
+    results = []
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_asin = {executor.submit(run_forecast, asin): asin for asin in asins}
+        
+        for future in as_completed(future_to_asin):
+            asin = future_to_asin[future]
+            try:
+                result = future.result()
+                if result.get('error') or result.get('units_to_make') is None:
+                    continue
+                
+                result['product_name'] = product_names.get(asin)
+                
+                if 'doi_total_days' in result:
+                    result['doi_total'] = result.pop('doi_total_days')
+                if 'doi_fba_days' in result:
+                    result['doi_fba'] = result.pop('doi_fba_days')
+                
+                results.append(result)
+            except Exception:
+                continue
+    
+    # Save to database
+    _save_forecasts_to_db(results)
+    
+    # Apply filters and return
+    filtered = results
+    if status_filter:
+        filtered = [r for r in filtered if r.get('status') == status_filter]
+    if algorithm_filter:
+        filtered = [r for r in filtered if r.get('algorithm') == algorithm_filter]
+    if min_units > 0:
+        filtered = [r for r in filtered if (r.get('units_to_make') or 0) >= min_units]
+    
+    filtered.sort(key=lambda x: x.get('units_to_make') or 0, reverse=True)
+    filtered = filtered[:limit]
+    
+    critical_count = sum(1 for r in results if r.get('status') == 'critical')
+    low_count = sum(1 for r in results if r.get('status') == 'low')
+    good_count = sum(1 for r in results if r.get('status') == 'good')
+    total_units = sum(r.get('units_to_make') or 0 for r in results)
+    
+    forecast_objects = [ForecastResult(**r) for r in filtered]
     
     return AllForecastsResponse(
         total_products=len(results),
         forecasts=forecast_objects,
-        critical_count=cached["critical_count"],
-        low_count=cached["low_count"],
-        good_count=cached["good_count"],
+        critical_count=critical_count,
+        low_count=low_count,
+        good_count=good_count,
         error_count=0,
-        total_units_to_make=cached["total_units"]
+        total_units_to_make=total_units
     )
+
+
+def _save_forecasts_to_db(results: list):
+    """Save forecast results to the forecast_cache table"""
+    from ..database import get_connection
+    
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    try:
+        # Clear existing data
+        cur.execute("DELETE FROM forecast_cache")
+        
+        # Insert new data
+        for r in results:
+            cur.execute("""
+                INSERT INTO forecast_cache 
+                (asin, product_name, algorithm, age_months, doi_total, doi_fba, 
+                 units_to_make, peak, total_inventory, fba_available, status, calculated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            """, (
+                r.get('asin'),
+                r.get('product_name'),
+                r.get('algorithm'),
+                r.get('age_months'),
+                r.get('doi_total'),
+                r.get('doi_fba'),
+                r.get('units_to_make'),
+                r.get('peak'),
+                r.get('total_inventory'),
+                r.get('fba_available'),
+                r.get('status')
+            ))
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.post("/refresh-cache")
+async def refresh_forecast_cache():
+    """
+    Manually refresh the forecast cache table.
+    This recalculates all forecasts and saves them to the database.
+    Takes 2-3 minutes to complete.
+    """
+    products = execute_query("""
+        SELECT DISTINCT p.asin 
+        FROM products p
+        JOIN asin_search_volume sv ON (p.parent_asin = sv.asin OR p.asin = sv.asin)
+        WHERE sv.search_volume > 0
+    """)
+    
+    if not products:
+        return {"status": "no_products", "count": 0}
+    
+    asins = [p['asin'] for p in products]
+    
+    product_names_result = execute_query("""
+        SELECT asin, product_name FROM products WHERE product_name IS NOT NULL
+    """)
+    product_names = {p['asin']: p['product_name'] for p in product_names_result} if product_names_result else {}
+    
+    results = []
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_asin = {executor.submit(run_forecast, asin): asin for asin in asins}
+        
+        for future in as_completed(future_to_asin):
+            asin = future_to_asin[future]
+            try:
+                result = future.result()
+                if result.get('error') or result.get('units_to_make') is None:
+                    continue
+                
+                result['product_name'] = product_names.get(asin)
+                
+                if 'doi_total_days' in result:
+                    result['doi_total'] = result.pop('doi_total_days')
+                if 'doi_fba_days' in result:
+                    result['doi_fba'] = result.pop('doi_fba_days')
+                
+                results.append(result)
+            except Exception:
+                continue
+    
+    _save_forecasts_to_db(results)
+    
+    return {
+        "status": "success",
+        "count": len(results),
+        "message": f"Refreshed {len(results)} forecasts"
+    }
