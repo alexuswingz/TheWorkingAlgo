@@ -6,6 +6,14 @@ from typing import Optional, Literal
 from datetime import date
 
 
+class DoiSettingsUsed(BaseModel):
+    """DOI settings used for forecast calculation"""
+    amazon_doi_goal: int = Field(..., description="Amazon DOI goal in days")
+    inbound_lead_time: int = Field(..., description="Inbound lead time in days")
+    manufacture_lead_time: int = Field(..., description="Manufacture lead time in days")
+    total_required_doi: int = Field(..., description="Total required DOI (sum of all three)")
+
+
 class ForecastResult(BaseModel):
     """Individual ASIN forecast result"""
     asin: str = Field(..., description="Product ASIN")
@@ -37,6 +45,9 @@ class ForecastResult(BaseModel):
     status: Literal["critical", "low", "good"] = Field("good", description="Inventory status")
     error: Optional[str] = Field(None, description="Error message if forecast failed")
     
+    # DOI settings used for calculation (optional - included when calculating on-the-fly)
+    doi_settings: Optional[DoiSettingsUsed] = Field(None, description="DOI settings used for this calculation")
+    
     class Config:
         populate_by_name = True
 
@@ -61,6 +72,9 @@ class AllForecastsResponse(BaseModel):
     
     # Totals
     total_units_to_make: int = Field(0, description="Sum of all units to make")
+    
+    # DOI settings used for calculation
+    doi_settings: Optional[DoiSettingsUsed] = Field(None, description="DOI settings used for this calculation")
 
 
 class HealthResponse(BaseModel):

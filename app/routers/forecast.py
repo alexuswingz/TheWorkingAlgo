@@ -6,7 +6,7 @@ from typing import Optional
 from datetime import date, datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from ..models import ForecastResult, AllForecastsResponse
+from ..models import ForecastResult, AllForecastsResponse, DoiSettingsUsed
 from ..database import execute_query
 from ..algorithms import forecast_0_6m, forecast_6_18m, forecast_18m_plus
 
@@ -41,34 +41,43 @@ def get_appropriate_algorithm(asin: str, today: date = None) -> str:
 def get_doi_settings(amazon_doi_goal: Optional[int] = None,
                      inbound_lead_time: Optional[int] = None,
                      manufacture_lead_time: Optional[int] = None) -> dict:
-    """Get DOI settings from database or use provided overrides"""
-    # If all parameters provided, use them directly
-    if all(x is not None for x in [amazon_doi_goal, inbound_lead_time, manufacture_lead_time]):
-        return {
-            'amazon_doi_goal': amazon_doi_goal,
-            'inbound_lead_time': inbound_lead_time,
-            'manufacture_lead_time': manufacture_lead_time
-        }
+    """Get DOI settings from database or use provided overrides.
     
-    # Try to get from database
+    Returns dict with amazon_doi_goal, inbound_lead_time, manufacture_lead_time, 
+    and total_required_doi (the sum of all three).
+    """
+    # Try to get from database first
     settings = execute_query(
         "SELECT amazon_doi_goal, inbound_lead_time, manufacture_lead_time FROM doi_settings WHERE is_default = true ORDER BY updated_at DESC LIMIT 1",
         fetch_one=True
     )
     
+    # Determine final values (priority: parameter > database > default)
     if settings:
-        return {
-            'amazon_doi_goal': amazon_doi_goal if amazon_doi_goal is not None else settings.get('amazon_doi_goal', 130),
-            'inbound_lead_time': inbound_lead_time if inbound_lead_time is not None else settings.get('inbound_lead_time', 30),
-            'manufacture_lead_time': manufacture_lead_time if manufacture_lead_time is not None else settings.get('manufacture_lead_time', 7)
-        }
+        final_amazon_doi = amazon_doi_goal if amazon_doi_goal is not None else settings.get('amazon_doi_goal', 130)
+        final_inbound_lt = inbound_lead_time if inbound_lead_time is not None else settings.get('inbound_lead_time', 30)
+        final_mfg_lt = manufacture_lead_time if manufacture_lead_time is not None else settings.get('manufacture_lead_time', 7)
+    else:
+        final_amazon_doi = amazon_doi_goal if amazon_doi_goal is not None else 130
+        final_inbound_lt = inbound_lead_time if inbound_lead_time is not None else 30
+        final_mfg_lt = manufacture_lead_time if manufacture_lead_time is not None else 7
     
-    # Return defaults
     return {
-        'amazon_doi_goal': amazon_doi_goal if amazon_doi_goal is not None else 130,
-        'inbound_lead_time': inbound_lead_time if inbound_lead_time is not None else 30,
-        'manufacture_lead_time': manufacture_lead_time if manufacture_lead_time is not None else 7
+        'amazon_doi_goal': final_amazon_doi,
+        'inbound_lead_time': final_inbound_lt,
+        'manufacture_lead_time': final_mfg_lt,
+        'total_required_doi': final_amazon_doi + final_inbound_lt + final_mfg_lt
     }
+
+
+def build_doi_settings_response(doi_settings: dict) -> DoiSettingsUsed:
+    """Build DoiSettingsUsed model from settings dict"""
+    return DoiSettingsUsed(
+        amazon_doi_goal=doi_settings['amazon_doi_goal'],
+        inbound_lead_time=doi_settings['inbound_lead_time'],
+        manufacture_lead_time=doi_settings['manufacture_lead_time'],
+        total_required_doi=doi_settings['total_required_doi']
+    )
 
 
 def run_forecast(asin: str, algorithm: str = None,
@@ -144,12 +153,20 @@ async def get_forecast(
             detail=f"Invalid algorithm: {algorithm}. Must be one of: 0-6m, 6-18m, 18m+"
         )
     
-    result = run_forecast(
-        asin, 
-        algorithm,
+    # Get DOI settings for response
+    doi_settings = get_doi_settings(
         amazon_doi_goal=amazon_doi_goal,
         inbound_lead_time=inbound_lead_time,
         manufacture_lead_time=manufacture_lead_time
+    )
+    doi_settings_response = build_doi_settings_response(doi_settings)
+    
+    result = run_forecast(
+        asin, 
+        algorithm,
+        amazon_doi_goal=doi_settings['amazon_doi_goal'],
+        inbound_lead_time=doi_settings['inbound_lead_time'],
+        manufacture_lead_time=doi_settings['manufacture_lead_time']
     )
     
     # Normalize response keys for 18m+ algorithm
@@ -157,6 +174,9 @@ async def get_forecast(
         result['doi_total'] = result.pop('doi_total_days')
     if 'doi_fba_days' in result:
         result['doi_fba'] = result.pop('doi_fba_days')
+    
+    # Add DOI settings to response
+    result['doi_settings'] = doi_settings_response
     
     return ForecastResult(**result)
 
@@ -173,24 +193,67 @@ async def get_all_forecasts(
     ),
     limit: int = Query(1000, ge=1, le=10000, description="Maximum number of results"),
     min_units: int = Query(0, ge=0, description="Minimum units to make"),
-    refresh: bool = Query(False, description="Force recalculation (slow)")
+    refresh: bool = Query(False, description="Force recalculation (slow)"),
+    amazon_doi_goal: Optional[int] = Query(
+        None,
+        description="Amazon DOI goal in days (overrides default, triggers recalculation if different)"
+    ),
+    inbound_lead_time: Optional[int] = Query(
+        None,
+        description="Inbound lead time in days (overrides default, triggers recalculation if different)"
+    ),
+    manufacture_lead_time: Optional[int] = Query(
+        None,
+        description="Manufacture lead time in days (overrides default, triggers recalculation if different)"
+    )
 ):
     """
     Get pre-calculated forecasts for all products (INSTANT from database).
     
     Returns forecasts from the pre-calculated `forecast_cache` table.
     Use ?refresh=true to force recalculation (takes ~2-3 minutes).
+    
+    If DOI parameters (amazon_doi_goal, inbound_lead_time, manufacture_lead_time) are provided,
+    forecasts will be recalculated on-the-fly with those settings.
     """
+    
+    # Get DOI settings (always needed for response)
+    doi_settings = get_doi_settings(
+        amazon_doi_goal=amazon_doi_goal,
+        inbound_lead_time=inbound_lead_time,
+        manufacture_lead_time=manufacture_lead_time
+    )
+    doi_settings_response = build_doi_settings_response(doi_settings)
+    
+    # If DOI parameters are provided, recalculate with those settings
+    if amazon_doi_goal is not None or inbound_lead_time is not None or manufacture_lead_time is not None:
+        # Recalculate with custom DOI settings
+        return await _recalculate_all_forecasts(
+            status_filter, 
+            algorithm_filter, 
+            limit, 
+            min_units,
+            amazon_doi_goal=doi_settings['amazon_doi_goal'],
+            inbound_lead_time=doi_settings['inbound_lead_time'],
+            manufacture_lead_time=doi_settings['manufacture_lead_time'],
+            doi_settings_response=doi_settings_response
+        )
     
     if refresh:
         # Force recalculation - this is slow but updates the cache
-        return await _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min_units)
+        return await _recalculate_all_forecasts(
+            status_filter, algorithm_filter, limit, min_units,
+            doi_settings_response=doi_settings_response
+        )
     
     # Read from pre-calculated table with inventory details (FAST!)
+    # Use COALESCE to ensure DOI values are never NULL (default to 0 if NULL)
     query = """
         SELECT 
             fc.asin, fc.product_name, fc.algorithm, fc.age_months,
-            fc.doi_total, fc.doi_fba, fc.units_to_make, fc.peak,
+            COALESCE(fc.doi_total, 0) as doi_total, 
+            COALESCE(fc.doi_fba, 0) as doi_fba, 
+            fc.units_to_make, fc.peak,
             fc.total_inventory, fc.fba_available, fc.status,
             fc.calculated_at,
             COALESCE(i.fba_reserved, 0) as fba_reserved,
@@ -230,7 +293,8 @@ async def get_all_forecasts(
             low_count=0,
             good_count=0,
             error_count=0,
-            total_units_to_make=0
+            total_units_to_make=0,
+            doi_settings=doi_settings_response
         )
     
     # Get totals from database
@@ -247,13 +311,17 @@ async def get_all_forecasts(
     # Convert to ForecastResult objects
     forecast_objects = []
     for r in results:
+        # Ensure DOI values are integers (COALESCE in query should handle NULL, but double-check)
+        doi_total = int(r.get('doi_total') or 0)
+        doi_fba = int(r.get('doi_fba') or 0)
+        
         forecast_objects.append(ForecastResult(
             asin=r['asin'],
             product_name=r.get('product_name'),
             algorithm=r['algorithm'],
             age_months=float(r['age_months']) if r.get('age_months') else None,
-            doi_total=r['doi_total'],
-            doi_fba=r['doi_fba'],
+            doi_total=doi_total,
+            doi_fba=doi_fba,
             units_to_make=r['units_to_make'],
             peak=r.get('peak'),
             total_inventory=r.get('total_inventory'),
@@ -273,12 +341,26 @@ async def get_all_forecasts(
         low_count=totals['low_count'] if totals else 0,
         good_count=totals['good_count'] if totals else 0,
         error_count=0,
-        total_units_to_make=int(totals['total_units'] or 0) if totals else 0
+        total_units_to_make=int(totals['total_units'] or 0) if totals else 0,
+        doi_settings=doi_settings_response
     )
 
 
-async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min_units):
+async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min_units,
+                                     amazon_doi_goal: Optional[int] = None,
+                                     inbound_lead_time: Optional[int] = None,
+                                     manufacture_lead_time: Optional[int] = None,
+                                     doi_settings_response: Optional[DoiSettingsUsed] = None):
     """Recalculate all forecasts and update the cache table"""
+    
+    # Build DOI settings response if not provided
+    if doi_settings_response is None:
+        doi_settings = get_doi_settings(
+            amazon_doi_goal=amazon_doi_goal,
+            inbound_lead_time=inbound_lead_time,
+            manufacture_lead_time=manufacture_lead_time
+        )
+        doi_settings_response = build_doi_settings_response(doi_settings)
     
     # Get products based on algorithm requirements:
     # - 18m+ products: only need sales data (no seasonality required)
@@ -324,7 +406,8 @@ async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min
     if not products:
         return AllForecastsResponse(
             total_products=0, forecasts=[], critical_count=0,
-            low_count=0, good_count=0, error_count=0, total_units_to_make=0
+            low_count=0, good_count=0, error_count=0, total_units_to_make=0,
+            doi_settings=doi_settings_response
         )
     
     asins = [p['asin'] for p in products]
@@ -335,8 +418,12 @@ async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min
     """)
     product_names = {p['asin']: p['product_name'] for p in product_names_result} if product_names_result else {}
     
-    # Get DOI settings from database for cache refresh
-    doi_settings = get_doi_settings()
+    # Get DOI settings - use provided parameters or get from database
+    doi_settings = get_doi_settings(
+        amazon_doi_goal=amazon_doi_goal,
+        inbound_lead_time=inbound_lead_time,
+        manufacture_lead_time=manufacture_lead_time
+    )
     
     # Calculate forecasts in parallel
     results = []
@@ -361,10 +448,15 @@ async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min
                 
                 result['product_name'] = product_names.get(asin)
                 
+                # Normalize DOI field names - 18m+ returns doi_total_days, others return doi_total
                 if 'doi_total_days' in result:
                     result['doi_total'] = result.pop('doi_total_days')
                 if 'doi_fba_days' in result:
                     result['doi_fba'] = result.pop('doi_fba_days')
+                
+                # Ensure DOI values are integers and not None
+                result['doi_total'] = int(result.get('doi_total') or 0)
+                result['doi_fba'] = int(result.get('doi_fba') or 0)
                 
                 results.append(result)
             except Exception:
@@ -399,7 +491,8 @@ async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min
         low_count=low_count,
         good_count=good_count,
         error_count=0,
-        total_units_to_make=total_units
+        total_units_to_make=total_units,
+        doi_settings=doi_settings_response
     )
 
 
@@ -416,6 +509,10 @@ def _save_forecasts_to_db(results: list):
         
         # Insert new data
         for r in results:
+            # Ensure DOI values are integers (not None) before saving
+            doi_total = int(r.get('doi_total') or 0)
+            doi_fba = int(r.get('doi_fba') or 0)
+            
             cur.execute("""
                 INSERT INTO forecast_cache 
                 (asin, product_name, algorithm, age_months, doi_total, doi_fba, 
@@ -426,8 +523,8 @@ def _save_forecasts_to_db(results: list):
                 r.get('product_name'),
                 r.get('algorithm'),
                 r.get('age_months'),
-                r.get('doi_total'),
-                r.get('doi_fba'),
+                doi_total,
+                doi_fba,
                 r.get('units_to_make'),
                 r.get('peak'),
                 r.get('total_inventory'),
@@ -577,10 +674,15 @@ async def refresh_forecast_cache():
                 
                 result['product_name'] = product_names.get(asin)
                 
+                # Normalize DOI field names - 18m+ returns doi_total_days, others return doi_total
                 if 'doi_total_days' in result:
                     result['doi_total'] = result.pop('doi_total_days')
                 if 'doi_fba_days' in result:
                     result['doi_fba'] = result.pop('doi_fba_days')
+                
+                # Ensure DOI values are integers and not None
+                result['doi_total'] = int(result.get('doi_total') or 0)
+                result['doi_fba'] = int(result.get('doi_fba') or 0)
                 
                 results.append(result)
             except Exception:

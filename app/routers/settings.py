@@ -20,12 +20,19 @@ class DoiSettingsResponse(BaseModel):
     amazon_doi_goal: int
     inbound_lead_time: int
     manufacture_lead_time: int
+    total_required_doi: int
 
 
 @router.get("/doi", response_model=DoiSettingsResponse)
 async def get_doi_settings():
     """
-    Get current DOI settings (defaults if not set)
+    Get current DOI settings (defaults if not set).
+    
+    Returns:
+    - amazon_doi_goal: Amazon DOI goal in days
+    - inbound_lead_time: Inbound lead time in days
+    - manufacture_lead_time: Manufacture lead time in days  
+    - total_required_doi: Sum of all three (planning horizon)
     """
     # Try to get from database first
     settings = execute_query(
@@ -34,24 +41,40 @@ async def get_doi_settings():
     )
     
     if settings:
+        amazon_doi = settings.get('amazon_doi_goal', 130)
+        inbound_lt = settings.get('inbound_lead_time', 30)
+        mfg_lt = settings.get('manufacture_lead_time', 7)
         return {
-            "amazon_doi_goal": settings.get('amazon_doi_goal', 130),
-            "inbound_lead_time": settings.get('inbound_lead_time', 30),
-            "manufacture_lead_time": settings.get('manufacture_lead_time', 7)
+            "amazon_doi_goal": amazon_doi,
+            "inbound_lead_time": inbound_lt,
+            "manufacture_lead_time": mfg_lt,
+            "total_required_doi": amazon_doi + inbound_lt + mfg_lt
         }
     
     # Return defaults if no settings found
     return {
         "amazon_doi_goal": 130,
         "inbound_lead_time": 30,
-        "manufacture_lead_time": 7
+        "manufacture_lead_time": 7,
+        "total_required_doi": 167  # 130 + 30 + 7
     }
 
 
-@router.post("/doi")
+class DoiSettingsSaveResponse(BaseModel):
+    success: bool
+    message: str
+    settings: DoiSettingsResponse
+
+
+@router.post("/doi", response_model=DoiSettingsSaveResponse)
 async def save_doi_settings(settings: DoiSettings):
     """
-    Save DOI settings (optionally as default)
+    Save DOI settings (optionally as default).
+    
+    Set save_as_default=true to persist as the default settings for all future forecasts.
+    Otherwise, settings are saved as session-specific (for tracking/audit purposes).
+    
+    Returns the saved settings including calculated total_required_doi.
     """
     conn = get_connection()
     try:
@@ -86,7 +109,18 @@ async def save_doi_settings(settings: DoiSettings):
             
             conn.commit()
         
-        return {"success": True, "message": "Settings saved successfully"}
+        total_required = settings.amazon_doi_goal + settings.inbound_lead_time + settings.manufacture_lead_time
+        
+        return {
+            "success": True, 
+            "message": "Settings saved as default" if settings.save_as_default else "Settings saved for session",
+            "settings": {
+                "amazon_doi_goal": settings.amazon_doi_goal,
+                "inbound_lead_time": settings.inbound_lead_time,
+                "manufacture_lead_time": settings.manufacture_lead_time,
+                "total_required_doi": total_required
+            }
+        }
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save settings: {str(e)}")
