@@ -311,11 +311,22 @@ def forecast_6_18m(asin: str, today_override: date = None,
     units_to_make = calculate_units_to_make(forecasts, total_inv, today, horizon_end)
     peak = int(max(f[1] for f in forecasts)) if forecasts else 0
     
+    # Calculate daily forecast rate for fast recalculation
+    forecast_180d_end = today + timedelta(days=180)
+    total_forecast_180d = 0
+    for week_end, forecast in forecasts:
+        week_start = week_end - timedelta(days=7)
+        overlap = max(0, (min(forecast_180d_end, week_end) - max(today, week_start)).days)
+        if overlap > 0:
+            total_forecast_180d += forecast * (overlap / 7)
+    daily_forecast_rate = total_forecast_180d / 180 if total_forecast_180d > 0 else 0
+    
     status = 'critical' if doi_total <= 14 else 'low' if doi_total <= 30 else 'good'
     
     return {
         'asin': asin, 'algorithm': '6-18m', 'age_months': round(age_months, 1),
         'doi_total': doi_total, 'doi_fba': doi_fba, 'units_to_make': units_to_make,
         'peak': peak, 'avg_peak_cvr': round(avg_peak_cvr, 6),
-        'total_inventory': total_inv, 'fba_available': fba_available, 'status': status
+        'total_inventory': total_inv, 'fba_available': fba_available, 'status': status,
+        'daily_forecast_rate': round(daily_forecast_rate, 4)
     }

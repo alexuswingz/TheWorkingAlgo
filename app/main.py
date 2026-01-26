@@ -36,7 +36,8 @@ def run_migrations():
             ALTER TABLE forecast_cache 
             ADD COLUMN IF NOT EXISTS cache_amazon_doi_goal INTEGER DEFAULT 93,
             ADD COLUMN IF NOT EXISTS cache_inbound_lead_time INTEGER DEFAULT 30,
-            ADD COLUMN IF NOT EXISTS cache_manufacture_lead_time INTEGER DEFAULT 7
+            ADD COLUMN IF NOT EXISTS cache_manufacture_lead_time INTEGER DEFAULT 7,
+            ADD COLUMN IF NOT EXISTS daily_forecast_rate FLOAT DEFAULT 0
         """)
         
         conn.commit()

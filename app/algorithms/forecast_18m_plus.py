@@ -261,6 +261,16 @@ def forecast_18m_plus(asin: str, today_override: date = None,
     doi_fba = calculate_doi(fba_available, forecasts, today)
     units_to_make = calculate_units_to_make(forecasts, total_inv, today, horizon_end)
     
+    # Calculate daily forecast rate for fast recalculation
+    forecast_180d_end = today + timedelta(days=180)
+    total_forecast_180d = 0
+    for week_end, forecast in forecasts:
+        week_start = week_end - timedelta(days=7)
+        overlap = max(0, (min(forecast_180d_end, week_end) - max(today, week_start)).days)
+        if overlap > 0:
+            total_forecast_180d += forecast * (overlap / 7)
+    daily_forecast_rate = total_forecast_180d / 180 if total_forecast_180d > 0 else 0
+    
     status = 'critical' if doi_total <= 14 else 'low' if doi_total <= 30 else 'good'
     
     return {
@@ -268,5 +278,6 @@ def forecast_18m_plus(asin: str, today_override: date = None,
         'doi_total_days': doi_total, 'doi_fba_days': doi_fba, 
         'units_to_make': round(units_to_make, 2),
         'sales_velocity_adj': round(velocity, 4),
-        'total_inventory': total_inv, 'fba_available': fba_available, 'status': status
+        'total_inventory': total_inv, 'fba_available': fba_available, 'status': status,
+        'daily_forecast_rate': round(daily_forecast_rate, 4)
     }
