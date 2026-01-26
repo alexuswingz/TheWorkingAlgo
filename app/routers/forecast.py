@@ -256,6 +256,9 @@ async def get_all_forecasts(
             fc.units_to_make, fc.peak,
             fc.total_inventory, fc.fba_available, fc.status,
             fc.calculated_at,
+            COALESCE(fc.cache_amazon_doi_goal, 130) as cache_amazon_doi_goal,
+            COALESCE(fc.cache_inbound_lead_time, 30) as cache_inbound_lead_time,
+            COALESCE(fc.cache_manufacture_lead_time, 7) as cache_manufacture_lead_time,
             COALESCE(i.fba_reserved, 0) as fba_reserved,
             COALESCE(i.fba_inbound, 0) as fba_inbound,
             COALESCE(i.awd_available, 0) as awd_available,
@@ -296,6 +299,19 @@ async def get_all_forecasts(
             total_units_to_make=0,
             doi_settings=doi_settings_response
         )
+    
+    # Extract DOI settings from cache (use first result's values - all should be same)
+    # This shows what DOI settings were actually used to calculate the cached data
+    cached_amazon_doi = results[0].get('cache_amazon_doi_goal', 130)
+    cached_inbound_lt = results[0].get('cache_inbound_lead_time', 30)
+    cached_mfg_lt = results[0].get('cache_manufacture_lead_time', 7)
+    
+    cached_doi_settings = DoiSettingsUsed(
+        amazon_doi_goal=cached_amazon_doi,
+        inbound_lead_time=cached_inbound_lt,
+        manufacture_lead_time=cached_mfg_lt,
+        total_required_doi=cached_amazon_doi + cached_inbound_lt + cached_mfg_lt
+    )
     
     # Get totals from database
     totals = execute_query("""
@@ -342,7 +358,7 @@ async def get_all_forecasts(
         good_count=totals['good_count'] if totals else 0,
         error_count=0,
         total_units_to_make=int(totals['total_units'] or 0) if totals else 0,
-        doi_settings=doi_settings_response
+        doi_settings=cached_doi_settings  # Use DOI settings from cache, not current defaults
     )
 
 
@@ -353,13 +369,13 @@ async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min
                                      doi_settings_response: Optional[DoiSettingsUsed] = None):
     """Recalculate all forecasts and update the cache table"""
     
-    # Build DOI settings response if not provided
+    # Build DOI settings (both dict and response)
+    doi_settings = get_doi_settings(
+        amazon_doi_goal=amazon_doi_goal,
+        inbound_lead_time=inbound_lead_time,
+        manufacture_lead_time=manufacture_lead_time
+    )
     if doi_settings_response is None:
-        doi_settings = get_doi_settings(
-            amazon_doi_goal=amazon_doi_goal,
-            inbound_lead_time=inbound_lead_time,
-            manufacture_lead_time=manufacture_lead_time
-        )
         doi_settings_response = build_doi_settings_response(doi_settings)
     
     # Get products based on algorithm requirements:
@@ -462,8 +478,8 @@ async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min
             except Exception:
                 continue
     
-    # Save to database
-    _save_forecasts_to_db(results)
+    # Save to database with DOI settings metadata
+    _save_forecasts_to_db(results, doi_settings)
     
     # Apply filters and return
     filtered = results
@@ -496,18 +512,30 @@ async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min
     )
 
 
-def _save_forecasts_to_db(results: list):
-    """Save forecast results to the forecast_cache table"""
+def _save_forecasts_to_db(results: list, doi_settings: dict = None):
+    """Save forecast results to the forecast_cache table with DOI settings metadata"""
     from ..database import get_connection
+    
+    # Default DOI settings if not provided
+    if doi_settings is None:
+        doi_settings = get_doi_settings()
     
     conn = get_connection()
     cur = conn.cursor()
     
     try:
+        # Ensure DOI columns exist (migration)
+        cur.execute("""
+            ALTER TABLE forecast_cache 
+            ADD COLUMN IF NOT EXISTS cache_amazon_doi_goal INTEGER DEFAULT 130,
+            ADD COLUMN IF NOT EXISTS cache_inbound_lead_time INTEGER DEFAULT 30,
+            ADD COLUMN IF NOT EXISTS cache_manufacture_lead_time INTEGER DEFAULT 7
+        """)
+        
         # Clear existing data
         cur.execute("DELETE FROM forecast_cache")
         
-        # Insert new data
+        # Insert new data with DOI settings
         for r in results:
             # Ensure DOI values are integers (not None) before saving
             doi_total = int(r.get('doi_total') or 0)
@@ -516,8 +544,9 @@ def _save_forecasts_to_db(results: list):
             cur.execute("""
                 INSERT INTO forecast_cache 
                 (asin, product_name, algorithm, age_months, doi_total, doi_fba, 
-                 units_to_make, peak, total_inventory, fba_available, status, calculated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                 units_to_make, peak, total_inventory, fba_available, status, calculated_at,
+                 cache_amazon_doi_goal, cache_inbound_lead_time, cache_manufacture_lead_time)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)
             """, (
                 r.get('asin'),
                 r.get('product_name'),
@@ -529,7 +558,10 @@ def _save_forecasts_to_db(results: list):
                 r.get('peak'),
                 r.get('total_inventory'),
                 r.get('fba_available'),
-                r.get('status')
+                r.get('status'),
+                doi_settings['amazon_doi_goal'],
+                doi_settings['inbound_lead_time'],
+                doi_settings['manufacture_lead_time']
             ))
         
         conn.commit()
@@ -643,7 +675,11 @@ async def refresh_forecast_cache():
     Manually refresh the forecast cache table.
     This recalculates all forecasts and saves them to the database.
     Takes 2-3 minutes to complete.
+    Uses current default DOI settings from the database.
     """
+    # Get current DOI settings
+    doi_settings = get_doi_settings()
+    
     products = execute_query("""
         SELECT DISTINCT p.asin 
         FROM products p
@@ -663,7 +699,16 @@ async def refresh_forecast_cache():
     
     results = []
     with ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_asin = {executor.submit(run_forecast, asin): asin for asin in asins}
+        future_to_asin = {
+            executor.submit(
+                run_forecast, 
+                asin,
+                amazon_doi_goal=doi_settings['amazon_doi_goal'],
+                inbound_lead_time=doi_settings['inbound_lead_time'],
+                manufacture_lead_time=doi_settings['manufacture_lead_time']
+            ): asin 
+            for asin in asins
+        }
         
         for future in as_completed(future_to_asin):
             asin = future_to_asin[future]
@@ -688,10 +733,17 @@ async def refresh_forecast_cache():
             except Exception:
                 continue
     
-    _save_forecasts_to_db(results)
+    # Save with DOI settings metadata
+    _save_forecasts_to_db(results, doi_settings)
     
     return {
         "status": "success",
         "count": len(results),
-        "message": f"Refreshed {len(results)} forecasts"
+        "message": f"Refreshed {len(results)} forecasts",
+        "doi_settings": {
+            "amazon_doi_goal": doi_settings['amazon_doi_goal'],
+            "inbound_lead_time": doi_settings['inbound_lead_time'],
+            "manufacture_lead_time": doi_settings['manufacture_lead_time'],
+            "total_required_doi": doi_settings['total_required_doi']
+        }
     }

@@ -44,5 +44,32 @@ def create_doi_settings_table():
     finally:
         conn.close()
 
+
+def add_doi_columns_to_forecast_cache():
+    """Add DOI settings columns to forecast_cache table"""
+    settings = get_settings()
+    conn = psycopg2.connect(settings.database_url)
+    
+    try:
+        with conn.cursor() as cur:
+            # Add DOI settings columns to forecast_cache if they don't exist
+            cur.execute("""
+                ALTER TABLE forecast_cache 
+                ADD COLUMN IF NOT EXISTS cache_amazon_doi_goal INTEGER DEFAULT 130,
+                ADD COLUMN IF NOT EXISTS cache_inbound_lead_time INTEGER DEFAULT 30,
+                ADD COLUMN IF NOT EXISTS cache_manufacture_lead_time INTEGER DEFAULT 7
+            """)
+            
+            conn.commit()
+            print("DOI columns added to forecast_cache successfully")
+    except Exception as e:
+        conn.rollback()
+        print(f"Error adding columns: {e}")
+        raise
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     create_doi_settings_table()
+    add_doi_columns_to_forecast_cache()
