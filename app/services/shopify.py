@@ -355,6 +355,7 @@ async def save_images_to_database(products: list) -> dict:
     """
     Save product images to database for persistence.
     Maps product names and SKUs to ASINs in our products table.
+    Uses aggressive matching to maximize image coverage.
     """
     from ..database import execute_query, get_connection
     
@@ -387,55 +388,80 @@ async def save_images_to_database(products: list) -> dict:
     if not db_products:
         return {"success": False, "error": "No products in database"}
     
-    # Build a mapping of product name keywords to ASIN
     matched = 0
+    matched_asins = set()  # Track which ASINs we've already matched
     conn = get_connection()
     cur = conn.cursor()
     
-    # Common stop words to ignore in matching
-    stop_words = {'for', 'and', 'the', 'a', 'an', 'of', 'to', 'in', 'with', 'plant', 'plants', 
-                  'liquid', 'food', 'complete', 'grow', 'growing', 'healthy', 'premium', 'organic'}
+    # Words to ignore in matching (common/filler words only)
+    stop_words = {'for', 'and', 'the', 'a', 'an', 'of', 'to', 'in', 'with', 'all', 'best', 'great', 'new'}
+    
+    # Key product type words - these are IMPORTANT for matching
+    product_types = {'fertilizer', 'spray', 'repellent', 'killer', 'nutrients', 'food', 'soil', 'acidifier'}
+    
+    # Extract key identifier from product name (first distinct word, usually the plant/pest name)
+    def get_key_identifier(name):
+        """Extract the main product identifier (e.g., 'hydrangea', 'rose', 'ant')"""
+        words = name.lower().replace("-", " ").replace(",", " ").replace("'s", "").split()
+        # Skip brand names and common prefixes
+        skip_prefixes = {'tps', 'bloom', 'city', "ms", "pixie", "burke", "mint", "naturestop", "nutrients"}
+        for word in words:
+            if len(word) > 2 and word not in stop_words and word not in product_types and word not in skip_prefixes:
+                return word
+        return None
+    
+    def normalize_name(name):
+        """Normalize product name for comparison"""
+        return name.lower().replace("-", " ").replace(",", " ").replace("'s", "").replace("'", "")
     
     try:
         for shopify_product in products:
-            shopify_title = shopify_product.get("title", "").lower()
+            shopify_title = shopify_product.get("title", "")
+            shopify_title_lower = normalize_name(shopify_title)
             image_url = shopify_product.get("featured_image")
             handle = shopify_product.get("handle", "").lower().replace("-", " ")
             
             if not image_url:
                 continue
             
-            # Try to match with our products by name similarity
+            shopify_key = get_key_identifier(shopify_title)
+            shopify_words = set(w for w in shopify_title_lower.split() if len(w) > 2 and w not in stop_words)
+            
+            # Find all matching DB products for this Shopify product
             for db_product in db_products:
-                db_name = (db_product.get("product_name") or "").lower()
+                db_name = db_product.get("product_name") or ""
+                db_name_lower = normalize_name(db_name)
                 asin = db_product.get("asin")
                 
-                if not db_name or not asin:
+                if not db_name or not asin or asin in matched_asins:
                     continue
                 
-                # Extract meaningful words (exclude stop words and short words)
-                shopify_words = set(w for w in shopify_title.replace("-", " ").replace(",", " ").split() 
-                                   if len(w) > 2 and w not in stop_words)
-                db_words = set(w for w in db_name.replace("-", " ").replace(",", " ").split() 
-                              if len(w) > 2 and w not in stop_words)
-                handle_words = set(w for w in handle.split() if len(w) > 2 and w not in stop_words)
+                db_key = get_key_identifier(db_name)
+                db_words = set(w for w in db_name_lower.split() if len(w) > 2 and w not in stop_words)
                 
-                # Match conditions (more flexible):
+                # Match conditions (aggressive matching):
                 common_words = shopify_words & db_words
-                handle_match = len(handle_words & db_words) >= 2
                 
-                # Match if:
-                # 1. At least 2 meaningful words match
-                # 2. OR exact title/name containment
-                # 3. OR handle matches well
-                # 4. OR key product identifier matches (e.g., specific plant name + "fertilizer")
-                is_match = (
-                    len(common_words) >= 2 or 
-                    shopify_title in db_name or 
-                    db_name in shopify_title or
-                    handle_match or
-                    (len(common_words) >= 1 and ('fertilizer' in shopify_words or 'fertilizer' in db_words))
-                )
+                # 1. Key identifier matches (e.g., "hydrangea" matches "hydrangea")
+                key_match = shopify_key and db_key and shopify_key == db_key
+                
+                # 2. Key identifier is contained in the other name
+                key_in_name = (shopify_key and shopify_key in db_name_lower) or (db_key and db_key in shopify_title_lower)
+                
+                # 3. Handle matches key identifier
+                handle_key_match = shopify_key and shopify_key in handle or (db_key and db_key in handle)
+                
+                # 4. Multiple common words
+                multi_word_match = len(common_words) >= 2
+                
+                # 5. Product type + at least one common word
+                has_product_type = bool(shopify_words & product_types) or bool(db_words & product_types)
+                type_plus_word = has_product_type and len(common_words) >= 1
+                
+                # 6. Direct containment
+                containment = shopify_title_lower in db_name_lower or db_name_lower in shopify_title_lower
+                
+                is_match = key_match or key_in_name or handle_key_match or multi_word_match or type_plus_word or containment
                 
                 if is_match:
                     cur.execute("""
@@ -445,17 +471,16 @@ async def save_images_to_database(products: list) -> dict:
                             image_url = EXCLUDED.image_url,
                             shopify_handle = EXCLUDED.shopify_handle,
                             updated_at = NOW()
-                    """, (asin, db_product.get("product_name"), image_url, shopify_product.get("handle")))
+                    """, (asin, db_name, image_url, shopify_product.get("handle")))
                     matched += 1
-                    break
+                    matched_asins.add(asin)
             
             # Also try matching by SKU in variants
             for sku, sku_image in shopify_product.get("sku_images", {}).items():
                 if sku and sku_image:
-                    # Check if SKU matches any ASIN
                     for db_product in db_products:
                         asin = db_product.get("asin")
-                        if asin and (sku == asin or sku.upper() == asin.upper()):
+                        if asin and asin not in matched_asins and (sku == asin or sku.upper() == asin.upper()):
                             cur.execute("""
                                 INSERT INTO product_images (asin, product_name, image_url, shopify_handle, updated_at)
                                 VALUES (%s, %s, %s, %s, NOW())
@@ -465,10 +490,11 @@ async def save_images_to_database(products: list) -> dict:
                                     updated_at = NOW()
                             """, (asin, db_product.get("product_name"), sku_image, handle))
                             matched += 1
+                            matched_asins.add(asin)
                             break
         
         conn.commit()
-        return {"success": True, "count": matched}
+        return {"success": True, "count": matched, "unique_asins": len(matched_asins)}
     except Exception as e:
         conn.rollback()
         return {"success": False, "error": str(e)}
