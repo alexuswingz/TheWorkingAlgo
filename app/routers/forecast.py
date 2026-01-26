@@ -54,11 +54,11 @@ def get_doi_settings(amazon_doi_goal: Optional[int] = None,
     
     # Determine final values (priority: parameter > database > default)
     if settings:
-        final_amazon_doi = amazon_doi_goal if amazon_doi_goal is not None else settings.get('amazon_doi_goal', 130)
+        final_amazon_doi = amazon_doi_goal if amazon_doi_goal is not None else settings.get('amazon_doi_goal', 93)
         final_inbound_lt = inbound_lead_time if inbound_lead_time is not None else settings.get('inbound_lead_time', 30)
         final_mfg_lt = manufacture_lead_time if manufacture_lead_time is not None else settings.get('manufacture_lead_time', 7)
     else:
-        final_amazon_doi = amazon_doi_goal if amazon_doi_goal is not None else 130
+        final_amazon_doi = amazon_doi_goal if amazon_doi_goal is not None else 93
         final_inbound_lt = inbound_lead_time if inbound_lead_time is not None else 30
         final_mfg_lt = manufacture_lead_time if manufacture_lead_time is not None else 7
     
@@ -256,7 +256,7 @@ async def get_all_forecasts(
             fc.units_to_make, fc.peak,
             fc.total_inventory, fc.fba_available, fc.status,
             fc.calculated_at,
-            COALESCE(fc.cache_amazon_doi_goal, 130) as cache_amazon_doi_goal,
+            COALESCE(fc.cache_amazon_doi_goal, 93) as cache_amazon_doi_goal,
             COALESCE(fc.cache_inbound_lead_time, 30) as cache_inbound_lead_time,
             COALESCE(fc.cache_manufacture_lead_time, 7) as cache_manufacture_lead_time,
             COALESCE(i.fba_reserved, 0) as fba_reserved,
@@ -302,7 +302,7 @@ async def get_all_forecasts(
     
     # Extract DOI settings from cache (use first result's values - all should be same)
     # This shows what DOI settings were actually used to calculate the cached data
-    cached_amazon_doi = results[0].get('cache_amazon_doi_goal', 130)
+    cached_amazon_doi = results[0].get('cache_amazon_doi_goal', 93)
     cached_inbound_lt = results[0].get('cache_inbound_lead_time', 30)
     cached_mfg_lt = results[0].get('cache_manufacture_lead_time', 7)
     
@@ -527,7 +527,7 @@ def _save_forecasts_to_db(results: list, doi_settings: dict = None):
         # Ensure DOI columns exist (migration)
         cur.execute("""
             ALTER TABLE forecast_cache 
-            ADD COLUMN IF NOT EXISTS cache_amazon_doi_goal INTEGER DEFAULT 130,
+            ADD COLUMN IF NOT EXISTS cache_amazon_doi_goal INTEGER DEFAULT 93,
             ADD COLUMN IF NOT EXISTS cache_inbound_lead_time INTEGER DEFAULT 30,
             ADD COLUMN IF NOT EXISTS cache_manufacture_lead_time INTEGER DEFAULT 7
         """)

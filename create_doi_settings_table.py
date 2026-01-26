@@ -15,7 +15,7 @@ def create_doi_settings_table():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS doi_settings (
                     id SERIAL PRIMARY KEY,
-                    amazon_doi_goal INTEGER NOT NULL DEFAULT 130,
+                    amazon_doi_goal INTEGER NOT NULL DEFAULT 93,
                     inbound_lead_time INTEGER NOT NULL DEFAULT 30,
                     manufacture_lead_time INTEGER NOT NULL DEFAULT 7,
                     is_default BOOLEAN NOT NULL DEFAULT false,
@@ -55,7 +55,7 @@ def add_doi_columns_to_forecast_cache():
             # Add DOI settings columns to forecast_cache if they don't exist
             cur.execute("""
                 ALTER TABLE forecast_cache 
-                ADD COLUMN IF NOT EXISTS cache_amazon_doi_goal INTEGER DEFAULT 130,
+                ADD COLUMN IF NOT EXISTS cache_amazon_doi_goal INTEGER DEFAULT 93,
                 ADD COLUMN IF NOT EXISTS cache_inbound_lead_time INTEGER DEFAULT 30,
                 ADD COLUMN IF NOT EXISTS cache_manufacture_lead_time INTEGER DEFAULT 7
             """)

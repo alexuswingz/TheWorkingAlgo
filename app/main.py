@@ -34,7 +34,7 @@ def run_migrations():
         # Add DOI settings columns to forecast_cache if they don't exist
         cur.execute("""
             ALTER TABLE forecast_cache 
-            ADD COLUMN IF NOT EXISTS cache_amazon_doi_goal INTEGER DEFAULT 130,
+            ADD COLUMN IF NOT EXISTS cache_amazon_doi_goal INTEGER DEFAULT 93,
             ADD COLUMN IF NOT EXISTS cache_inbound_lead_time INTEGER DEFAULT 30,
             ADD COLUMN IF NOT EXISTS cache_manufacture_lead_time INTEGER DEFAULT 7
         """)

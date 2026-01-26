@@ -41,7 +41,7 @@ async def get_doi_settings():
     )
     
     if settings:
-        amazon_doi = settings.get('amazon_doi_goal', 130)
+        amazon_doi = settings.get('amazon_doi_goal', 93)
         inbound_lt = settings.get('inbound_lead_time', 30)
         mfg_lt = settings.get('manufacture_lead_time', 7)
         return {
@@ -53,10 +53,10 @@ async def get_doi_settings():
     
     # Return defaults if no settings found
     return {
-        "amazon_doi_goal": 130,
+        "amazon_doi_goal": 93,
         "inbound_lead_time": 30,
         "manufacture_lead_time": 7,
-        "total_required_doi": 167  # 130 + 30 + 7
+        "total_required_doi": 130  # 93 + 30 + 7
     }
 
 
