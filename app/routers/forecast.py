@@ -145,7 +145,7 @@ async def recalculate_doi(
         total_required_doi=planning_horizon
     )
     
-    # Read cached data with cumulative_forecast
+    # Read cached data with cumulative_forecast and product images
     query = """
         SELECT 
             fc.asin, fc.product_name, fc.algorithm, fc.age_months,
@@ -156,9 +156,11 @@ async def recalculate_doi(
             COALESCE(i.fba_inbound, 0) as fba_inbound,
             COALESCE(i.awd_available, 0) as awd_available,
             COALESCE(i.awd_reserved, 0) as awd_reserved,
-            COALESCE(i.awd_inbound, 0) as awd_inbound
+            COALESCE(i.awd_inbound, 0) as awd_inbound,
+            pi.image_url
         FROM forecast_cache fc
         LEFT JOIN inventory i ON fc.asin = i.asin
+        LEFT JOIN product_images pi ON fc.asin = pi.asin
         WHERE 1=1
     """
     params = []
@@ -242,6 +244,7 @@ async def recalculate_doi(
         forecast_objects.append(ForecastResult(
             asin=r['asin'],
             product_name=r.get('product_name'),
+            image_url=r.get('image_url'),  # From product_images table
             algorithm=r['algorithm'],
             age_months=float(r['age_months']) if r.get('age_months') else None,
             doi_total=doi_total,
@@ -447,6 +450,7 @@ async def get_all_forecasts(
     
     # Read from pre-calculated table with inventory details (FAST!)
     # Use COALESCE to ensure DOI values are never NULL (default to 0 if NULL)
+    # Include product images via LEFT JOIN to product_images table
     query = """
         SELECT 
             fc.asin, fc.product_name, fc.algorithm, fc.age_months,
@@ -462,9 +466,11 @@ async def get_all_forecasts(
             COALESCE(i.fba_inbound, 0) as fba_inbound,
             COALESCE(i.awd_available, 0) as awd_available,
             COALESCE(i.awd_reserved, 0) as awd_reserved,
-            COALESCE(i.awd_inbound, 0) as awd_inbound
+            COALESCE(i.awd_inbound, 0) as awd_inbound,
+            pi.image_url
         FROM forecast_cache fc
         LEFT JOIN inventory i ON fc.asin = i.asin
+        LEFT JOIN product_images pi ON fc.asin = pi.asin
         WHERE 1=1
     """
     params = []
@@ -533,6 +539,7 @@ async def get_all_forecasts(
         forecast_objects.append(ForecastResult(
             asin=r['asin'],
             product_name=r.get('product_name'),
+            image_url=r.get('image_url'),  # From product_images table
             algorithm=r['algorithm'],
             age_months=float(r['age_months']) if r.get('age_months') else None,
             doi_total=doi_total,

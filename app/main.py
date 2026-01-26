@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from .config import get_settings
-from .routers import forecast, health
+from .routers import forecast, health, images
 from .routers import settings as settings_router
 
 
@@ -103,6 +103,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(forecast.router)
     app.include_router(settings_router.router)
+    app.include_router(images.router)
     
     return app
 

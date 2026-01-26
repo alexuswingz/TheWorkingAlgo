@@ -1,0 +1,400 @@
+{
+	"info": {
+		"_postman_id": "forecast-api-collection",
+		"name": "Forecast API",
+		"description": "API collection for inventory forecast calculations with configurable DOI settings.\n\n**Base URL:** https://web-production-015c7.up.railway.app\n\n**Key Endpoints:**\n- `/forecast/fast-recalculate` - FAST (~1s) recalculation with custom DOI\n- `/forecast/` - Cached forecasts (~4s)\n- `/settings/doi` - DOI settings management",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "https://web-production-015c7.up.railway.app",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Health",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/health",
+							"host": ["{{baseUrl}}"],
+							"path": ["health"]
+						},
+						"description": "Check API health and database connection status."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "DOI Settings",
+			"item": [
+				{
+					"name": "Get DOI Settings",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/settings/doi",
+							"host": ["{{baseUrl}}"],
+							"path": ["settings", "doi"]
+						},
+						"description": "Get current DOI settings including total_required_doi."
+					},
+					"response": []
+				},
+				{
+					"name": "Save DOI Settings (as Default)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"amazon_doi_goal\": 93,\n    \"inbound_lead_time\": 30,\n    \"manufacture_lead_time\": 7,\n    \"save_as_default\": true\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/settings/doi",
+							"host": ["{{baseUrl}}"],
+							"path": ["settings", "doi"]
+						},
+						"description": "Save DOI settings as the default for all future forecasts."
+					},
+					"response": []
+				},
+				{
+					"name": "Save DOI Settings (Session Only)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"amazon_doi_goal\": 130,\n    \"inbound_lead_time\": 30,\n    \"manufacture_lead_time\": 7,\n    \"save_as_default\": false\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/settings/doi",
+							"host": ["{{baseUrl}}"],
+							"path": ["settings", "doi"]
+						},
+						"description": "Save DOI settings for audit/tracking purposes without changing defaults."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Forecasts - Fast",
+			"item": [
+				{
+					"name": "FAST Recalculate (Default: 130 days)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/fast-recalculate?amazon_doi_goal=93&inbound_lead_time=30&manufacture_lead_time=7&limit=100",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", "fast-recalculate"],
+							"query": [
+								{
+									"key": "amazon_doi_goal",
+									"value": "93",
+									"description": "Amazon DOI goal in days"
+								},
+								{
+									"key": "inbound_lead_time",
+									"value": "30",
+									"description": "Inbound lead time in days"
+								},
+								{
+									"key": "manufacture_lead_time",
+									"value": "7",
+									"description": "Manufacture lead time in days"
+								},
+								{
+									"key": "limit",
+									"value": "100",
+									"description": "Max results to return"
+								}
+							]
+						},
+						"description": "**FAST (~1 second)** - Recalculate units_to_make with default DOI settings (93+30+7=130 days)."
+					},
+					"response": []
+				},
+				{
+					"name": "FAST Recalculate (Custom: 167 days)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/fast-recalculate?amazon_doi_goal=130&inbound_lead_time=30&manufacture_lead_time=7&limit=100",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", "fast-recalculate"],
+							"query": [
+								{
+									"key": "amazon_doi_goal",
+									"value": "130",
+									"description": "Amazon DOI goal in days"
+								},
+								{
+									"key": "inbound_lead_time",
+									"value": "30",
+									"description": "Inbound lead time in days"
+								},
+								{
+									"key": "manufacture_lead_time",
+									"value": "7",
+									"description": "Manufacture lead time in days"
+								},
+								{
+									"key": "limit",
+									"value": "100",
+									"description": "Max results to return"
+								}
+							]
+						},
+						"description": "**FAST (~1 second)** - Recalculate units_to_make with custom DOI (130+30+7=167 days)."
+					},
+					"response": []
+				},
+				{
+					"name": "FAST Recalculate (Critical Only)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/fast-recalculate?amazon_doi_goal=93&inbound_lead_time=30&manufacture_lead_time=7&status_filter=critical&limit=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", "fast-recalculate"],
+							"query": [
+								{
+									"key": "amazon_doi_goal",
+									"value": "93"
+								},
+								{
+									"key": "inbound_lead_time",
+									"value": "30"
+								},
+								{
+									"key": "manufacture_lead_time",
+									"value": "7"
+								},
+								{
+									"key": "status_filter",
+									"value": "critical",
+									"description": "Filter: critical, low, good"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						},
+						"description": "**FAST (~1 second)** - Get only critical inventory items."
+					},
+					"response": []
+				},
+				{
+					"name": "FAST Recalculate (Min Units Filter)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/fast-recalculate?amazon_doi_goal=93&inbound_lead_time=30&manufacture_lead_time=7&min_units=1000&limit=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", "fast-recalculate"],
+							"query": [
+								{
+									"key": "amazon_doi_goal",
+									"value": "93"
+								},
+								{
+									"key": "inbound_lead_time",
+									"value": "30"
+								},
+								{
+									"key": "manufacture_lead_time",
+									"value": "7"
+								},
+								{
+									"key": "min_units",
+									"value": "1000",
+									"description": "Minimum units_to_make"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						},
+						"description": "**FAST (~1 second)** - Get products needing at least 1000 units."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Forecasts - Cached",
+			"item": [
+				{
+					"name": "Get All Forecasts (Cached)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/?limit=100",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", ""],
+							"query": [
+								{
+									"key": "limit",
+									"value": "100"
+								}
+							]
+						},
+						"description": "Get pre-calculated forecasts from cache (~4 seconds). Returns DOI settings used when cache was built."
+					},
+					"response": []
+				},
+				{
+					"name": "Get All Forecasts (Critical Only)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/?status_filter=critical&limit=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", ""],
+							"query": [
+								{
+									"key": "status_filter",
+									"value": "critical"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						},
+						"description": "Get cached forecasts filtered by critical status."
+					},
+					"response": []
+				},
+				{
+					"name": "Get All Forecasts (18m+ Algorithm)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/?algorithm_filter=18m%2B&limit=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", ""],
+							"query": [
+								{
+									"key": "algorithm_filter",
+									"value": "18m+"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						},
+						"description": "Get cached forecasts filtered by 18m+ algorithm."
+					},
+					"response": []
+				},
+				{
+					"name": "Refresh Cache (SLOW ~70s)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/refresh-cache",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", "refresh-cache"]
+						},
+						"description": "**SLOW (~70 seconds)** - Rebuild the entire forecast cache with current default DOI settings."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Single Product",
+			"item": [
+				{
+					"name": "Get Single ASIN Forecast",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/B0C73TDZCQ",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", "B0C73TDZCQ"]
+						},
+						"description": "Get forecast for a single product using default DOI settings."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Single ASIN with Custom DOI",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/B0C73TDZCQ?amazon_doi_goal=130&inbound_lead_time=30&manufacture_lead_time=7",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", "B0C73TDZCQ"],
+							"query": [
+								{
+									"key": "amazon_doi_goal",
+									"value": "130"
+								},
+								{
+									"key": "inbound_lead_time",
+									"value": "30"
+								},
+								{
+									"key": "manufacture_lead_time",
+									"value": "7"
+								}
+							]
+						},
+						"description": "Get forecast for a single product with custom DOI settings."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Sales Data (Chart)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/forecast/B0C73TDZCQ/sales",
+							"host": ["{{baseUrl}}"],
+							"path": ["forecast", "B0C73TDZCQ", "sales"]
+						},
+						"description": "Get weekly sales data for charting (historical + forecast)."
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
