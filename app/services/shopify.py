@@ -392,11 +392,15 @@ async def save_images_to_database(products: list) -> dict:
     conn = get_connection()
     cur = conn.cursor()
     
+    # Common stop words to ignore in matching
+    stop_words = {'for', 'and', 'the', 'a', 'an', 'of', 'to', 'in', 'with', 'plant', 'plants', 
+                  'liquid', 'food', 'complete', 'grow', 'growing', 'healthy', 'premium', 'organic'}
+    
     try:
         for shopify_product in products:
             shopify_title = shopify_product.get("title", "").lower()
             image_url = shopify_product.get("featured_image")
-            handle = shopify_product.get("handle")
+            handle = shopify_product.get("handle", "").lower().replace("-", " ")
             
             if not image_url:
                 continue
@@ -409,14 +413,31 @@ async def save_images_to_database(products: list) -> dict:
                 if not db_name or not asin:
                     continue
                 
-                # Simple matching: check if key words from Shopify title appear in DB name
-                # or vice versa
-                shopify_words = set(shopify_title.replace("-", " ").split())
-                db_words = set(db_name.replace("-", " ").split())
+                # Extract meaningful words (exclude stop words and short words)
+                shopify_words = set(w for w in shopify_title.replace("-", " ").replace(",", " ").split() 
+                                   if len(w) > 2 and w not in stop_words)
+                db_words = set(w for w in db_name.replace("-", " ").replace(",", " ").split() 
+                              if len(w) > 2 and w not in stop_words)
+                handle_words = set(w for w in handle.split() if len(w) > 2 and w not in stop_words)
                 
-                # Match if significant overlap (at least 3 words match)
+                # Match conditions (more flexible):
                 common_words = shopify_words & db_words
-                if len(common_words) >= 3 or shopify_title in db_name or db_name in shopify_title:
+                handle_match = len(handle_words & db_words) >= 2
+                
+                # Match if:
+                # 1. At least 2 meaningful words match
+                # 2. OR exact title/name containment
+                # 3. OR handle matches well
+                # 4. OR key product identifier matches (e.g., specific plant name + "fertilizer")
+                is_match = (
+                    len(common_words) >= 2 or 
+                    shopify_title in db_name or 
+                    db_name in shopify_title or
+                    handle_match or
+                    (len(common_words) >= 1 and ('fertilizer' in shopify_words or 'fertilizer' in db_words))
+                )
+                
+                if is_match:
                     cur.execute("""
                         INSERT INTO product_images (asin, product_name, image_url, shopify_handle, updated_at)
                         VALUES (%s, %s, %s, %s, NOW())
@@ -424,7 +445,7 @@ async def save_images_to_database(products: list) -> dict:
                             image_url = EXCLUDED.image_url,
                             shopify_handle = EXCLUDED.shopify_handle,
                             updated_at = NOW()
-                    """, (asin, db_product.get("product_name"), image_url, handle))
+                    """, (asin, db_product.get("product_name"), image_url, shopify_product.get("handle")))
                     matched += 1
                     break
             
