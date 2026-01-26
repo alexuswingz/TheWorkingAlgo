@@ -38,17 +38,71 @@ def get_appropriate_algorithm(asin: str, today: date = None) -> str:
         return '18m+'
 
 
-def run_forecast(asin: str, algorithm: str = None) -> dict:
+def get_doi_settings(amazon_doi_goal: Optional[int] = None,
+                     inbound_lead_time: Optional[int] = None,
+                     manufacture_lead_time: Optional[int] = None) -> dict:
+    """Get DOI settings from database or use provided overrides"""
+    # If all parameters provided, use them directly
+    if all(x is not None for x in [amazon_doi_goal, inbound_lead_time, manufacture_lead_time]):
+        return {
+            'amazon_doi_goal': amazon_doi_goal,
+            'inbound_lead_time': inbound_lead_time,
+            'manufacture_lead_time': manufacture_lead_time
+        }
+    
+    # Try to get from database
+    settings = execute_query(
+        "SELECT amazon_doi_goal, inbound_lead_time, manufacture_lead_time FROM doi_settings WHERE is_default = true ORDER BY updated_at DESC LIMIT 1",
+        fetch_one=True
+    )
+    
+    if settings:
+        return {
+            'amazon_doi_goal': amazon_doi_goal if amazon_doi_goal is not None else settings.get('amazon_doi_goal', 130),
+            'inbound_lead_time': inbound_lead_time if inbound_lead_time is not None else settings.get('inbound_lead_time', 30),
+            'manufacture_lead_time': manufacture_lead_time if manufacture_lead_time is not None else settings.get('manufacture_lead_time', 7)
+        }
+    
+    # Return defaults
+    return {
+        'amazon_doi_goal': amazon_doi_goal if amazon_doi_goal is not None else 130,
+        'inbound_lead_time': inbound_lead_time if inbound_lead_time is not None else 30,
+        'manufacture_lead_time': manufacture_lead_time if manufacture_lead_time is not None else 7
+    }
+
+
+def run_forecast(asin: str, algorithm: str = None,
+                 amazon_doi_goal: Optional[int] = None,
+                 inbound_lead_time: Optional[int] = None,
+                 manufacture_lead_time: Optional[int] = None) -> dict:
     """Run forecast for a single ASIN using appropriate algorithm"""
     if algorithm is None:
         algorithm = get_appropriate_algorithm(asin)
     
+    # Get DOI settings (will use database defaults if not provided)
+    doi_settings = get_doi_settings(amazon_doi_goal, inbound_lead_time, manufacture_lead_time)
+    
     if algorithm == '0-6m':
-        return forecast_0_6m(asin)
+        return forecast_0_6m(
+            asin,
+            amazon_doi_goal=doi_settings['amazon_doi_goal'],
+            inbound_lead_time=doi_settings['inbound_lead_time'],
+            manufacture_lead_time=doi_settings['manufacture_lead_time']
+        )
     elif algorithm == '6-18m':
-        return forecast_6_18m(asin)
+        return forecast_6_18m(
+            asin,
+            amazon_doi_goal=doi_settings['amazon_doi_goal'],
+            inbound_lead_time=doi_settings['inbound_lead_time'],
+            manufacture_lead_time=doi_settings['manufacture_lead_time']
+        )
     else:
-        return forecast_18m_plus(asin)
+        return forecast_18m_plus(
+            asin,
+            amazon_doi_goal=doi_settings['amazon_doi_goal'],
+            inbound_lead_time=doi_settings['inbound_lead_time'],
+            manufacture_lead_time=doi_settings['manufacture_lead_time']
+        )
 
 
 @router.get("/{asin}", response_model=ForecastResult)
@@ -57,6 +111,18 @@ async def get_forecast(
     algorithm: Optional[str] = Query(
         None, 
         description="Force specific algorithm (0-6m, 6-18m, 18m+). Auto-detected if not specified."
+    ),
+    amazon_doi_goal: Optional[int] = Query(
+        None,
+        description="Amazon DOI goal in days (overrides default from database)"
+    ),
+    inbound_lead_time: Optional[int] = Query(
+        None,
+        description="Inbound lead time in days (overrides default from database)"
+    ),
+    manufacture_lead_time: Optional[int] = Query(
+        None,
+        description="Manufacture lead time in days (overrides default from database)"
     )
 ):
     """
@@ -68,6 +134,8 @@ async def get_forecast(
     - 18m+: Products older than 18 months
     
     You can override the algorithm selection using the `algorithm` query parameter.
+    DOI settings (amazon_doi_goal, inbound_lead_time, manufacture_lead_time) can be provided
+    as query parameters to override the default values from the database.
     """
     # Validate algorithm if provided
     if algorithm and algorithm not in ['0-6m', '6-18m', '18m+']:
@@ -76,7 +144,13 @@ async def get_forecast(
             detail=f"Invalid algorithm: {algorithm}. Must be one of: 0-6m, 6-18m, 18m+"
         )
     
-    result = run_forecast(asin, algorithm)
+    result = run_forecast(
+        asin, 
+        algorithm,
+        amazon_doi_goal=amazon_doi_goal,
+        inbound_lead_time=inbound_lead_time,
+        manufacture_lead_time=manufacture_lead_time
+    )
     
     # Normalize response keys for 18m+ algorithm
     if 'doi_total_days' in result:
@@ -261,10 +335,22 @@ async def _recalculate_all_forecasts(status_filter, algorithm_filter, limit, min
     """)
     product_names = {p['asin']: p['product_name'] for p in product_names_result} if product_names_result else {}
     
+    # Get DOI settings from database for cache refresh
+    doi_settings = get_doi_settings()
+    
     # Calculate forecasts in parallel
     results = []
     with ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_asin = {executor.submit(run_forecast, asin): asin for asin in asins}
+        future_to_asin = {
+            executor.submit(
+                run_forecast, 
+                asin,
+                amazon_doi_goal=doi_settings['amazon_doi_goal'],
+                inbound_lead_time=doi_settings['inbound_lead_time'],
+                manufacture_lead_time=doi_settings['manufacture_lead_time']
+            ): asin 
+            for asin in asins
+        }
         
         for future in as_completed(future_to_asin):
             asin = future_to_asin[future]

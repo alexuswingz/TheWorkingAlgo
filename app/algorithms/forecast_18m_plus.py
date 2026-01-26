@@ -161,7 +161,10 @@ def calculate_units_to_make(forecasts: List[tuple], total_inv: int,
 
 
 def forecast_18m_plus(asin: str, today_override: date = None,
-                       total_inventory: int = None, fba_inventory: int = None) -> dict:
+                       total_inventory: int = None, fba_inventory: int = None,
+                       amazon_doi_goal: Optional[int] = None,
+                       inbound_lead_time: Optional[int] = None,
+                       manufacture_lead_time: Optional[int] = None) -> dict:
     """Main forecast function for 18m+ products.
     
     Args:
@@ -169,9 +172,17 @@ def forecast_18m_plus(asin: str, today_override: date = None,
         today_override: Override for today's date
         total_inventory: Override for total inventory (if None, fetched from DB)
         fba_inventory: Override for FBA available inventory (if None, fetched from DB)
+        amazon_doi_goal: Amazon DOI goal in days (defaults to DOI_GOAL constant if None)
+        inbound_lead_time: Inbound lead time in days (defaults to INBOUND_LEAD_TIME constant if None)
+        manufacture_lead_time: Manufacture lead time in days (defaults to MFG_LEAD_TIME constant if None)
     """
     today = today_override or date.today()
-    horizon_end = today + timedelta(days=PLANNING_HORIZON)
+    # Use provided DOI settings or fall back to constants
+    doi_goal = amazon_doi_goal if amazon_doi_goal is not None else DOI_GOAL
+    inbound_lt = inbound_lead_time if inbound_lead_time is not None else INBOUND_LEAD_TIME
+    mfg_lt = manufacture_lead_time if manufacture_lead_time is not None else MFG_LEAD_TIME
+    planning_horizon = doi_goal + inbound_lt + mfg_lt
+    horizon_end = today + timedelta(days=planning_horizon)
     
     # Get product info
     product = execute_query(
