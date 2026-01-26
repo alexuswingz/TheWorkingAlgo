@@ -114,6 +114,143 @@ def run_forecast(asin: str, algorithm: str = None,
         )
 
 
+@router.get("/fast-recalculate", response_model=AllForecastsResponse)
+async def fast_recalculate_forecasts(
+    amazon_doi_goal: int = Query(..., description="Amazon DOI goal in days"),
+    inbound_lead_time: int = Query(..., description="Inbound lead time in days"),
+    manufacture_lead_time: int = Query(..., description="Manufacture lead time in days"),
+    status_filter: Optional[str] = Query(None, description="Filter by status: critical, low, good"),
+    algorithm_filter: Optional[str] = Query(None, description="Filter by algorithm: 0-6m, 6-18m, 18m+"),
+    limit: int = Query(1000, ge=1, le=10000, description="Maximum number of results"),
+    min_units: int = Query(0, ge=0, description="Minimum units to make")
+):
+    """
+    FAST recalculation of units_to_make with new DOI settings (~2-5 seconds).
+    
+    Uses cached daily_forecast_rate to instantly recalculate units_to_make
+    without re-running the full forecast algorithms.
+    
+    Formula: units_to_make = max(0, planning_horizon * daily_forecast_rate - total_inventory)
+    """
+    planning_horizon = amazon_doi_goal + inbound_lead_time + manufacture_lead_time
+    
+    doi_settings_response = DoiSettingsUsed(
+        amazon_doi_goal=amazon_doi_goal,
+        inbound_lead_time=inbound_lead_time,
+        manufacture_lead_time=manufacture_lead_time,
+        total_required_doi=planning_horizon
+    )
+    
+    # Read cached data with daily_forecast_rate
+    query = """
+        SELECT 
+            fc.asin, fc.product_name, fc.algorithm, fc.age_months,
+            COALESCE(fc.doi_total, 0) as doi_total, 
+            COALESCE(fc.doi_fba, 0) as doi_fba, 
+            fc.peak, fc.total_inventory, fc.fba_available,
+            COALESCE(fc.daily_forecast_rate, 0) as daily_forecast_rate,
+            COALESCE(i.fba_reserved, 0) as fba_reserved,
+            COALESCE(i.fba_inbound, 0) as fba_inbound,
+            COALESCE(i.awd_available, 0) as awd_available,
+            COALESCE(i.awd_reserved, 0) as awd_reserved,
+            COALESCE(i.awd_inbound, 0) as awd_inbound
+        FROM forecast_cache fc
+        LEFT JOIN inventory i ON fc.asin = i.asin
+        WHERE 1=1
+    """
+    params = []
+    
+    if algorithm_filter:
+        query += " AND fc.algorithm = %s"
+        params.append(algorithm_filter)
+    
+    results = execute_query(query, tuple(params) if params else None)
+    
+    if not results:
+        return AllForecastsResponse(
+            total_products=0,
+            forecasts=[],
+            critical_count=0,
+            low_count=0,
+            good_count=0,
+            error_count=0,
+            total_units_to_make=0,
+            doi_settings=doi_settings_response
+        )
+    
+    # Recalculate units_to_make for each product using cached daily_forecast_rate
+    forecast_objects = []
+    total_units = 0
+    critical_count = 0
+    low_count = 0
+    good_count = 0
+    
+    for r in results:
+        daily_rate = r.get('daily_forecast_rate') or 0
+        total_inv = r.get('total_inventory') or 0
+        
+        # Fast recalculation formula
+        new_units_to_make = max(0, int(round(planning_horizon * daily_rate - total_inv)))
+        
+        # Recalculate DOI based on daily rate
+        doi_total = int(total_inv / daily_rate) if daily_rate > 0 else 365
+        fba_available = r.get('fba_available') or 0
+        doi_fba = int(fba_available / daily_rate) if daily_rate > 0 else 365
+        
+        # Determine status based on new DOI
+        if doi_total <= 14:
+            status = 'critical'
+            critical_count += 1
+        elif doi_total <= 30:
+            status = 'low'
+            low_count += 1
+        else:
+            status = 'good'
+            good_count += 1
+        
+        # Apply filters
+        if status_filter and status != status_filter:
+            continue
+        if min_units > 0 and new_units_to_make < min_units:
+            continue
+        
+        total_units += new_units_to_make
+        
+        forecast_objects.append(ForecastResult(
+            asin=r['asin'],
+            product_name=r.get('product_name'),
+            algorithm=r['algorithm'],
+            age_months=float(r['age_months']) if r.get('age_months') else None,
+            doi_total=doi_total,
+            doi_fba=doi_fba,
+            units_to_make=new_units_to_make,
+            peak=r.get('peak'),
+            total_inventory=total_inv,
+            fba_available=fba_available,
+            fba_reserved=r.get('fba_reserved'),
+            fba_inbound=r.get('fba_inbound'),
+            awd_available=r.get('awd_available'),
+            awd_reserved=r.get('awd_reserved'),
+            awd_inbound=r.get('awd_inbound'),
+            status=status
+        ))
+    
+    # Sort by units_to_make descending and apply limit
+    forecast_objects.sort(key=lambda x: x.units_to_make or 0, reverse=True)
+    forecast_objects = forecast_objects[:limit]
+    
+    return AllForecastsResponse(
+        total_products=len(results),
+        forecasts=forecast_objects,
+        critical_count=critical_count,
+        low_count=low_count,
+        good_count=good_count,
+        error_count=0,
+        total_units_to_make=total_units,
+        doi_settings=doi_settings_response
+    )
+
+
 @router.get("/{asin}", response_model=ForecastResult)
 async def get_forecast(
     asin: str,
@@ -574,143 +711,6 @@ def _save_forecasts_to_db(results: list, doi_settings: dict = None):
     finally:
         cur.close()
         conn.close()
-
-
-@router.get("/fast-recalculate", response_model=AllForecastsResponse)
-async def fast_recalculate_forecasts(
-    amazon_doi_goal: int = Query(..., description="Amazon DOI goal in days"),
-    inbound_lead_time: int = Query(..., description="Inbound lead time in days"),
-    manufacture_lead_time: int = Query(..., description="Manufacture lead time in days"),
-    status_filter: Optional[str] = Query(None, description="Filter by status: critical, low, good"),
-    algorithm_filter: Optional[str] = Query(None, description="Filter by algorithm: 0-6m, 6-18m, 18m+"),
-    limit: int = Query(1000, ge=1, le=10000, description="Maximum number of results"),
-    min_units: int = Query(0, ge=0, description="Minimum units to make")
-):
-    """
-    FAST recalculation of units_to_make with new DOI settings (~2-5 seconds).
-    
-    Uses cached daily_forecast_rate to instantly recalculate units_to_make
-    without re-running the full forecast algorithms.
-    
-    Formula: units_to_make = max(0, planning_horizon * daily_forecast_rate - total_inventory)
-    """
-    planning_horizon = amazon_doi_goal + inbound_lead_time + manufacture_lead_time
-    
-    doi_settings_response = DoiSettingsUsed(
-        amazon_doi_goal=amazon_doi_goal,
-        inbound_lead_time=inbound_lead_time,
-        manufacture_lead_time=manufacture_lead_time,
-        total_required_doi=planning_horizon
-    )
-    
-    # Read cached data with daily_forecast_rate
-    query = """
-        SELECT 
-            fc.asin, fc.product_name, fc.algorithm, fc.age_months,
-            COALESCE(fc.doi_total, 0) as doi_total, 
-            COALESCE(fc.doi_fba, 0) as doi_fba, 
-            fc.peak, fc.total_inventory, fc.fba_available,
-            COALESCE(fc.daily_forecast_rate, 0) as daily_forecast_rate,
-            COALESCE(i.fba_reserved, 0) as fba_reserved,
-            COALESCE(i.fba_inbound, 0) as fba_inbound,
-            COALESCE(i.awd_available, 0) as awd_available,
-            COALESCE(i.awd_reserved, 0) as awd_reserved,
-            COALESCE(i.awd_inbound, 0) as awd_inbound
-        FROM forecast_cache fc
-        LEFT JOIN inventory i ON fc.asin = i.asin
-        WHERE 1=1
-    """
-    params = []
-    
-    if algorithm_filter:
-        query += " AND fc.algorithm = %s"
-        params.append(algorithm_filter)
-    
-    results = execute_query(query, tuple(params) if params else None)
-    
-    if not results:
-        return AllForecastsResponse(
-            total_products=0,
-            forecasts=[],
-            critical_count=0,
-            low_count=0,
-            good_count=0,
-            error_count=0,
-            total_units_to_make=0,
-            doi_settings=doi_settings_response
-        )
-    
-    # Recalculate units_to_make for each product using cached daily_forecast_rate
-    forecast_objects = []
-    total_units = 0
-    critical_count = 0
-    low_count = 0
-    good_count = 0
-    
-    for r in results:
-        daily_rate = r.get('daily_forecast_rate') or 0
-        total_inv = r.get('total_inventory') or 0
-        
-        # Fast recalculation formula
-        new_units_to_make = max(0, int(round(planning_horizon * daily_rate - total_inv)))
-        
-        # Recalculate DOI based on daily rate
-        doi_total = int(total_inv / daily_rate) if daily_rate > 0 else 365
-        fba_available = r.get('fba_available') or 0
-        doi_fba = int(fba_available / daily_rate) if daily_rate > 0 else 365
-        
-        # Determine status based on new DOI
-        if doi_total <= 14:
-            status = 'critical'
-            critical_count += 1
-        elif doi_total <= 30:
-            status = 'low'
-            low_count += 1
-        else:
-            status = 'good'
-            good_count += 1
-        
-        # Apply filters
-        if status_filter and status != status_filter:
-            continue
-        if min_units > 0 and new_units_to_make < min_units:
-            continue
-        
-        total_units += new_units_to_make
-        
-        forecast_objects.append(ForecastResult(
-            asin=r['asin'],
-            product_name=r.get('product_name'),
-            algorithm=r['algorithm'],
-            age_months=float(r['age_months']) if r.get('age_months') else None,
-            doi_total=doi_total,
-            doi_fba=doi_fba,
-            units_to_make=new_units_to_make,
-            peak=r.get('peak'),
-            total_inventory=total_inv,
-            fba_available=fba_available,
-            fba_reserved=r.get('fba_reserved'),
-            fba_inbound=r.get('fba_inbound'),
-            awd_available=r.get('awd_available'),
-            awd_reserved=r.get('awd_reserved'),
-            awd_inbound=r.get('awd_inbound'),
-            status=status
-        ))
-    
-    # Sort by units_to_make descending and apply limit
-    forecast_objects.sort(key=lambda x: x.units_to_make or 0, reverse=True)
-    forecast_objects = forecast_objects[:limit]
-    
-    return AllForecastsResponse(
-        total_products=len(results),
-        forecasts=forecast_objects,
-        critical_count=critical_count,
-        low_count=low_count,
-        good_count=good_count,
-        error_count=0,
-        total_units_to_make=total_units,
-        doi_settings=doi_settings_response
-    )
 
 
 @router.get("/{asin}/sales")
