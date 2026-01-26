@@ -234,16 +234,22 @@ def forecast_0_6m(asin: str, today_override: date = None,
     doi_fba = calculate_doi(fba_available, forecasts, today)
     units_to_make = calculate_units_to_make(forecasts, total_inv, today, horizon_end)
     
-    # Calculate daily forecast rate for fast recalculation
-    # Sum forecasts for first 180 days and divide by 180
-    forecast_180d_end = today + timedelta(days=180)
-    total_forecast_180d = 0
-    for week_end, forecast in forecasts:
-        week_start = week_end - timedelta(days=7)
-        overlap = max(0, (min(forecast_180d_end, week_end) - max(today, week_start)).days)
-        if overlap > 0:
-            total_forecast_180d += forecast * (overlap / 7)
-    daily_forecast_rate = total_forecast_180d / 180 if total_forecast_180d > 0 else 0
+    # Calculate cumulative forecast at key intervals (for instant DOI recalculation)
+    cumulative_intervals = [30, 60, 90, 100, 110, 120, 130, 140, 150, 180, 200, 250, 300, 365]
+    cumulative_forecast = {}
+    
+    for interval in cumulative_intervals:
+        interval_end = today + timedelta(days=interval)
+        interval_total = 0
+        for week_end, forecast in forecasts:
+            week_start = week_end - timedelta(days=7)
+            overlap = max(0, (min(interval_end, week_end) - max(today, week_start)).days)
+            if overlap > 0:
+                interval_total += forecast * (overlap / 7)
+        cumulative_forecast[str(interval)] = round(interval_total, 2)
+    
+    # Calculate daily forecast rate (average over 180 days for DOI calculation)
+    daily_forecast_rate = cumulative_forecast.get('180', 0) / 180 if cumulative_forecast.get('180', 0) > 0 else 0
     
     status = 'critical' if doi_total <= 14 else 'low' if doi_total <= 30 else 'good'
     
@@ -252,5 +258,6 @@ def forecast_0_6m(asin: str, today_override: date = None,
         'doi_total': doi_total, 'doi_fba': doi_fba, 'units_to_make': units_to_make,
         'peak': peak, 'idx_now': round(idx_now, 4),
         'total_inventory': total_inv, 'fba_available': fba_available, 'status': status,
-        'daily_forecast_rate': round(daily_forecast_rate, 4)
+        'daily_forecast_rate': round(daily_forecast_rate, 4),
+        'cumulative_forecast': cumulative_forecast
     }
