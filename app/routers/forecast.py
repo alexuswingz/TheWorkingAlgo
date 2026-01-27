@@ -154,6 +154,7 @@ async def recalculate_doi(
             COALESCE(fc.daily_forecast_rate, 0) as daily_forecast_rate,
             COALESCE(fc.doi_total, 0) as doi_total,
             COALESCE(fc.doi_fba, 0) as doi_fba,
+            COALESCE(fc.units_to_make, 0) as cached_units_to_make,
             COALESCE(i.fba_reserved, 0) as fba_reserved,
             COALESCE(i.fba_inbound, 0) as fba_inbound,
             COALESCE(i.awd_available, 0) as awd_available,
@@ -196,6 +197,7 @@ async def recalculate_doi(
         total_inv = r.get('total_inventory') or 0
         fba_available = r.get('fba_available') or 0
         daily_rate = r.get('daily_forecast_rate') or 0
+        cached_units = r.get('cached_units_to_make') or 0
         
         # Get cumulative forecast data
         cumulative_data = r.get('cumulative_forecast')
@@ -210,15 +212,15 @@ async def recalculate_doi(
                 # cumulative_data is a dict like {"30": 1500, "60": 3200, "90": 5000, ...}
                 # Interpolate to find forecast sum at planning_horizon
                 forecast_sum = _interpolate_cumulative_forecast(cumulative_data, planning_horizon)
+                # Calculate accurate units_to_make from cumulative forecast
+                new_units_to_make = max(0, int(round(forecast_sum - total_inv)))
             except (json.JSONDecodeError, TypeError):
-                # Fallback to daily rate approximation if JSON parsing fails
-                forecast_sum = planning_horizon * daily_rate
+                # Fallback to cached units_to_make if JSON parsing fails
+                new_units_to_make = cached_units
         else:
-            # Fallback to daily rate approximation
-            forecast_sum = planning_horizon * daily_rate
-        
-        # Calculate accurate units_to_make
-        new_units_to_make = max(0, int(round(forecast_sum - total_inv)))
+            # No cumulative forecast data - use cached units_to_make directly
+            # This is the pre-calculated value from the forecast algorithm
+            new_units_to_make = cached_units
         
         # Use cached DOI values if available, otherwise recalculate (or default to 365 if no sales data)
         cached_doi_total = r.get('doi_total') or 0
