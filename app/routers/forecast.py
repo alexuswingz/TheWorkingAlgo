@@ -395,6 +395,36 @@ async def get_forecast(
     # Add DOI settings to response
     result['doi_settings'] = doi_settings_response
     
+    # Fetch full inventory breakdown from inventory table
+    inventory_data = execute_query("""
+        SELECT 
+            COALESCE(fba_available, 0) as fba_available,
+            COALESCE(fba_reserved, 0) as fba_reserved,
+            COALESCE(fba_inbound, 0) as fba_inbound,
+            COALESCE(awd_available, 0) as awd_available,
+            COALESCE(awd_reserved, 0) as awd_reserved,
+            COALESCE(awd_inbound, 0) as awd_inbound,
+            COALESCE(awd_outbound_to_fba, 0) as awd_outbound_to_fba
+        FROM inventory WHERE asin = %s
+    """, (asin,), fetch_one=True)
+    
+    if inventory_data:
+        result['fba_available'] = inventory_data['fba_available']
+        result['fba_reserved'] = inventory_data['fba_reserved']
+        result['fba_inbound'] = inventory_data['fba_inbound']
+        result['awd_available'] = inventory_data['awd_available']
+        result['awd_reserved'] = inventory_data['awd_reserved']
+        result['awd_inbound'] = inventory_data['awd_inbound']
+        # Calculate total inventory
+        result['total_inventory'] = (
+            inventory_data['fba_available'] + 
+            inventory_data['fba_reserved'] + 
+            inventory_data['fba_inbound'] +
+            inventory_data['awd_available'] + 
+            inventory_data['awd_reserved'] + 
+            inventory_data['awd_inbound']
+        )
+    
     return ForecastResult(**result)
 
 
