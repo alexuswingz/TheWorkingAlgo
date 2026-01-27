@@ -152,6 +152,8 @@ async def recalculate_doi(
             fc.peak, fc.total_inventory, fc.fba_available,
             fc.cumulative_forecast,
             COALESCE(fc.daily_forecast_rate, 0) as daily_forecast_rate,
+            COALESCE(fc.doi_total, 0) as doi_total,
+            COALESCE(fc.doi_fba, 0) as doi_fba,
             COALESCE(i.fba_reserved, 0) as fba_reserved,
             COALESCE(i.fba_inbound, 0) as fba_inbound,
             COALESCE(i.awd_available, 0) as awd_available,
@@ -218,9 +220,22 @@ async def recalculate_doi(
         # Calculate accurate units_to_make
         new_units_to_make = max(0, int(round(forecast_sum - total_inv)))
         
-        # Recalculate DOI based on daily rate (for status)
-        doi_total = int(total_inv / daily_rate) if daily_rate > 0 else 365
-        doi_fba = int(fba_available / daily_rate) if daily_rate > 0 else 365
+        # Use cached DOI values if available, otherwise recalculate (or default to 365 if no sales data)
+        cached_doi_total = r.get('doi_total') or 0
+        cached_doi_fba = r.get('doi_fba') or 0
+        
+        if daily_rate > 0:
+            # Recalculate DOI based on daily rate
+            doi_total = int(total_inv / daily_rate)
+            doi_fba = int(fba_available / daily_rate)
+        elif cached_doi_total > 0:
+            # Use cached DOI values if daily_rate is 0 but cache has values
+            doi_total = cached_doi_total
+            doi_fba = cached_doi_fba
+        else:
+            # No sales data and no cached DOI - default to 365
+            doi_total = 365
+            doi_fba = 365
         
         # Determine status based on DOI
         if doi_total <= 14:
