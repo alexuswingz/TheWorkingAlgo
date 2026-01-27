@@ -244,16 +244,24 @@ async def recalculate_doi(
             else:
                 new_units_to_make = cached_units
         
-        # Use cached DOI values if available, otherwise recalculate (or default to 365 if no sales data)
+        # Recalculate DOI based on the planning horizon's forecast rate
+        # This ensures DOI changes when Required DOI setting changes
         cached_doi_total = r.get('doi_total') or 0
         cached_doi_fba = r.get('doi_fba') or 0
         
-        if daily_rate > 0:
-            # Recalculate DOI based on daily rate
-            doi_total = int(total_inv / daily_rate)
-            doi_fba = int(fba_available / daily_rate)
+        # Calculate daily rate for THIS planning horizon using cumulative forecast
+        horizon_daily_rate = 0
+        if cumulative_data and forecast_sum > 0 and planning_horizon > 0:
+            horizon_daily_rate = forecast_sum / planning_horizon
+        elif daily_rate > 0:
+            horizon_daily_rate = daily_rate
+        
+        if horizon_daily_rate > 0:
+            # Calculate DOI using the planning horizon's daily rate
+            doi_total = int(total_inv / horizon_daily_rate)
+            doi_fba = int(fba_available / horizon_daily_rate)
         elif cached_doi_total > 0:
-            # Use cached DOI values if daily_rate is 0 but cache has values
+            # Use cached DOI values if no forecast data but cache has values
             doi_total = cached_doi_total
             doi_fba = cached_doi_fba
         else:
