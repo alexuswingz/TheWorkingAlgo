@@ -193,6 +193,10 @@ async def recalculate_doi(
     low_count = 0
     good_count = 0
     
+    # Get cached DOI settings to calculate scaling ratio
+    # Default cached DOI is 130 (93 + 30 + 7)
+    default_cached_doi = 130
+    
     for r in results:
         total_inv = r.get('total_inventory') or 0
         fba_available = r.get('fba_available') or 0
@@ -215,12 +219,30 @@ async def recalculate_doi(
                 # Calculate accurate units_to_make from cumulative forecast
                 new_units_to_make = max(0, int(round(forecast_sum - total_inv)))
             except (json.JSONDecodeError, TypeError):
-                # Fallback to cached units_to_make if JSON parsing fails
-                new_units_to_make = cached_units
+                # Fallback to scaled cached units_to_make if JSON parsing fails
+                # Scale based on DOI ratio
+                if cached_units > 0 and default_cached_doi > 0:
+                    doi_ratio = planning_horizon / default_cached_doi
+                    new_units_to_make = max(0, int(round(cached_units * doi_ratio)))
+                else:
+                    new_units_to_make = cached_units
         else:
-            # No cumulative forecast data - use cached units_to_make directly
-            # This is the pre-calculated value from the forecast algorithm
-            new_units_to_make = cached_units
+            # No cumulative forecast data - scale cached units_to_make based on DOI ratio
+            # This approximates the recalculation by assuming linear scaling with DOI
+            if cached_units > 0 and default_cached_doi > 0:
+                doi_ratio = planning_horizon / default_cached_doi
+                # Scale: new_units = cached_units * (new_doi / cached_doi)
+                # But also need to account for inventory not changing
+                # Formula: units_to_make = forecast_sum - inventory
+                # If forecast_sum scales linearly: new_forecast = old_forecast * ratio
+                # new_units = (old_forecast * ratio) - inventory
+                # old_units = old_forecast - inventory
+                # old_forecast = old_units + inventory
+                old_forecast_sum = cached_units + total_inv
+                new_forecast_sum = old_forecast_sum * doi_ratio
+                new_units_to_make = max(0, int(round(new_forecast_sum - total_inv)))
+            else:
+                new_units_to_make = cached_units
         
         # Use cached DOI values if available, otherwise recalculate (or default to 365 if no sales data)
         cached_doi_total = r.get('doi_total') or 0
