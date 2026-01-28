@@ -160,6 +160,7 @@ async def recalculate_doi(
             COALESCE(i.awd_available, 0) as awd_available,
             COALESCE(i.awd_reserved, 0) as awd_reserved,
             COALESCE(i.awd_inbound, 0) as awd_inbound,
+            COALESCE(i.label_inventory, 0) as label_inventory,
             pi.image_url
         FROM forecast_cache fc
         LEFT JOIN inventory i ON fc.asin = i.asin
@@ -304,6 +305,7 @@ async def recalculate_doi(
             fba_inbound=r.get('fba_inbound'),
             awd_available=r.get('awd_available'),
             awd_reserved=r.get('awd_reserved'),
+            label_inventory=r.get('label_inventory'),
             awd_inbound=r.get('awd_inbound'),
             status=status
         ))
@@ -436,7 +438,8 @@ async def get_forecast(
             COALESCE(awd_available, 0) as awd_available,
             COALESCE(awd_reserved, 0) as awd_reserved,
             COALESCE(awd_inbound, 0) as awd_inbound,
-            COALESCE(awd_outbound_to_fba, 0) as awd_outbound_to_fba
+            COALESCE(awd_outbound_to_fba, 0) as awd_outbound_to_fba,
+            COALESCE(label_inventory, 0) as label_inventory
         FROM inventory WHERE asin = %s
     """, (asin,), fetch_one=True)
     
@@ -447,6 +450,7 @@ async def get_forecast(
         result['awd_available'] = inventory_data['awd_available']
         result['awd_reserved'] = inventory_data['awd_reserved']
         result['awd_inbound'] = inventory_data['awd_inbound']
+        result['label_inventory'] = inventory_data['label_inventory']
         # Calculate total inventory
         result['total_inventory'] = (
             inventory_data['fba_available'] + 
@@ -544,6 +548,7 @@ async def get_all_forecasts(
             COALESCE(i.awd_available, 0) as awd_available,
             COALESCE(i.awd_reserved, 0) as awd_reserved,
             COALESCE(i.awd_inbound, 0) as awd_inbound,
+            COALESCE(i.label_inventory, 0) as label_inventory,
             pi.image_url
         FROM forecast_cache fc
         LEFT JOIN inventory i ON fc.asin = i.asin
@@ -630,6 +635,7 @@ async def get_all_forecasts(
             awd_available=r.get('awd_available'),
             awd_reserved=r.get('awd_reserved'),
             awd_inbound=r.get('awd_inbound'),
+            label_inventory=r.get('label_inventory'),
             status=r['status']
         ))
     

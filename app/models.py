@@ -30,6 +30,7 @@ class ForecastResult(BaseModel):
     awd_available: Optional[int] = Field(None, description="AWD available inventory")
     awd_reserved: Optional[int] = Field(None, description="AWD reserved inventory")
     awd_inbound: Optional[int] = Field(None, description="AWD inbound inventory")
+    label_inventory: Optional[int] = Field(None, description="Label inventory count")
     
     # Forecast metrics
     units_to_make: Optional[int] = Field(None, description="Units needed to manufacture")
