@@ -1047,3 +1047,59 @@ async def refresh_forecast_cache():
             "total_required_doi": doi_settings['total_required_doi']
         }
     }
+
+
+@router.get("/labels")
+async def get_all_labels():
+    """
+    Get label inventory for all ASINs from Railway database.
+    Returns label_inventory grouped by ASIN.
+    """
+    results = execute_query("""
+        SELECT 
+            asin,
+            COALESCE(label_inventory, 0) as label_inventory
+        FROM inventory
+        WHERE label_inventory IS NOT NULL AND label_inventory > 0
+        ORDER BY asin
+    """)
+    
+    # Create a map by ASIN for easy lookup
+    labels_by_asin = {}
+    for r in results:
+        labels_by_asin[r['asin']] = r['label_inventory']
+    
+    return {
+        "success": True,
+        "count": len(results),
+        "labels": results,
+        "byAsin": labels_by_asin
+    }
+
+
+@router.get("/labels/{asin}")
+async def get_label_by_asin(asin: str):
+    """
+    Get label inventory for a specific ASIN from Railway database.
+    """
+    result = execute_query("""
+        SELECT 
+            asin,
+            COALESCE(label_inventory, 0) as label_inventory
+        FROM inventory
+        WHERE asin = %s
+    """, (asin,), fetch_one=True)
+    
+    if not result:
+        return {
+            "success": True,
+            "asin": asin,
+            "label_inventory": 0,
+            "message": "ASIN not found in inventory"
+        }
+    
+    return {
+        "success": True,
+        "asin": asin,
+        "label_inventory": result['label_inventory']
+    }
